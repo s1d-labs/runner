@@ -1,29 +1,30 @@
-# s1d-labs/scrapers
+# s1d-labs/runner
 
-The scrapers behind [scrape-hub](https://scrape.s1d.me), in one public repository, plus the pool runner that lets members
-lend their own GitHub Actions minutes to the scrape.
+The generic side of the s1d-labs scrape pool: the hub's Python client (`sdk/`), the pool worker (`runner/`) and the reusable
+workflow that members' repos call (`.github/workflows/runner.yml`). Nothing here knows any scraper: each family's code is its own
+repository, `s1d-labs/<family>` (for example [s1d-labs/gepnic](https://github.com/s1d-labs/gepnic)).
 
-scrape-hub is the coordinator: it holds the work queues, the records and the dashboard, and decides who scrapes what. The code
-that talks to the target sites lives here. Runners prove who they are with a GitHub Actions OIDC token (audience
-`https://scrape.s1d.me`), so no secrets are stored in this repository or in members' repositories.
+[scrape-hub](https://scrape.s1d.me) is the coordinator: it holds the queues, starts runs in members' accounts, signs uploads into
+each family's storage and tracks runners, IPs, requests and hosts. Runners prove who they are with a GitHub Actions OIDC token
+(audience `https://scrape.s1d.me`), so no secrets are stored in this repository or in members' repositories.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `sdk/` | `scrape-hub-client` (module `scrape_hub_client`), the hub's Python client: `HubClient`, `register_project`, `seed_queue`, ..., and `PoolClient` for pool assignments. `pip install ./sdk` |
-| `families/gepnic/` | The GePNIC tender scraper (eprocure.gov.in and the state, central and PSU portals in `data/gepnic_portals.json`). Copied from eprocure-scrape; see `families/gepnic/ORIGIN.md` |
-| `runner/` | The generic pool worker, `python -m runner.worker` (standard library + the sdk) |
-| `.github/workflows/runner.yml` | Reusable workflow that members' repos call. It starts `jobs` runners with `procs` workers each |
-| `.github/workflows/gepnic-*.yml` | The GePNIC family's own workflows (seed, count, crawl, consolidate, backfill), for manual runs inside the org |
+| `sdk/` | `scrape-hub-client` (module `scrape_hub_client`): `HubClient`, `register_project`, `seed_queue`, ..., and `PoolClient` for pool assignments. `pip install ./sdk`, or from anywhere: `pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@main#subdirectory=sdk"` |
+| `runner/` | The pool worker, `python -m runner.worker` (standard library + the sdk) |
+| `.github/workflows/runner.yml` | Reusable workflow: `jobs` runners x `procs` workers, each running the family's code from `s1d-labs/<family>` |
 
 ## How the pool works
 
 1. A member's `scrape-runner` repo (made from the [s1d-labs/scrape-runner](https://github.com/s1d-labs/scrape-runner) template)
-   has one workflow, which only calls `s1d-labs/scrapers/.github/workflows/runner.yml@main`.
-2. The hub starts that workflow through the GitHub API with the member's token (`workflow_dispatch`, inputs `jobs`, `procs`,
-   `ref`, `family`, `hub`, `max_hours`).
-3. Each worker process asks the hub what to do:
+   has one workflow, which only calls `s1d-labs/runner/.github/workflows/runner.yml@main`.
+2. The hub starts it through the GitHub API with the member's token (`workflow_dispatch`, inputs `jobs`, `procs`, `ref`, `family`,
+   `hub`, `max_hours`).
+3. `runner.yml` checks out this repo at `ref` and `s1d-labs/<family>` at `main` (into `family/`), installs the sdk and runs the
+   family's `setup` commands from its `scrape.json`.
+4. Each worker asks the hub what to do:
 
    ```
    POST {hub}/api/v1/pool/assign
@@ -31,25 +32,24 @@ that talks to the target sites lives here. Runners prove who they are with a Git
    {"family": "gepnic", "job_index": 3, "total_jobs": 8, "worker": "<runner name>/<pid>"}
    ```
 
-   and gets either `{"work": null, "reason": "wait"}` (nothing yet: ask again in 30-120 s), `{"work": null, "reason": "done"}`
-   (stop), or
+   and gets `{"work": null, "reason": "wait"}` (ask again in 30-120 s), `{"work": null, "reason": "done"}` (stop), or
 
    ```json
-   {"work": {"family": "gepnic", "portal": "wbtenders.gov.in", "project": "gepnic-wbtenders",
-             "stage": "crawl", "args": [], "max_minutes": 60}}
+   {"work": {"family": "gepnic", "project": "gepnic-wbtenders", "task": "crawl", "target": "wbtenders.gov.in",
+             "env": {"PORTAL": "wbtenders.gov.in"}, "args": [], "max_minutes": 60}}
    ```
 
-4. For `gepnic` the worker runs, in `families/gepnic`,
-   `PORTAL=<portal> python crawl.py|count.py --job-index <i> --total-jobs <n> --max-hours <max_minutes/60> <args...>`,
-   streams its output, and asks again when it exits. It stops at `--max-hours` (default 5.5, under the 6 h job limit).
+   The hub never interprets `task`, `target` or `env`: the family wrote them into its projects' settings. `target` is the host the
+   work hits; the hub caps workers per target and holds a target whose health check fails.
+5. The worker runs the family's command for that task in `family/`, with the assignment's env, its args appended, and
+   `SCRAPE_JOB_INDEX`, `SCRAPE_TOTAL_JOBS`, `SCRAPE_MAX_HOURS`, `SCRAPE_HUB_URL`, `SCRAPE_POOL_PROJECT`, `SCRAPE_POOL_TARGET`.
+   It asks again when the command exits and stops at `--max-hours` (default 5.5, under the 6 h job limit).
 
-The worker's own flags: `--family`, `--job-index`, `--total-jobs`, `--hub`, `--max-hours`, `--worker`, `--dry-run` (print the
-command instead of running it, stop after one assignment) and `--hub-fake` (with `--dry-run`: no hub call, one made-up
-assignment). Local check:
+Local check against a family checkout, without a hub:
 
 ```sh
 pip install ./sdk
-python -m runner.worker --family gepnic --dry-run --hub-fake
+python -m runner.worker --family gepnic --family-dir ../gepnic --dry-run --hub-fake --fake-env PORTAL=wbtenders.gov.in
 ```
 
 ## Joining the pool (members)
@@ -58,22 +58,25 @@ python -m runner.worker --family gepnic --dry-run --hub-fake
    `<you>/scrape-runner` as a **public** repository (public repositories get free Actions minutes).
 2. Create a fine-grained personal access token: resource owner you, only the `scrape-runner` repository, permissions
    **Actions: read and write** (Metadata: read is added automatically). Expiry up to a year.
-3. On https://scrape.s1d.me -> **Runners**, add your GitHub username, the repository name and the token.
+3. On https://scrape.s1d.me -> **Runners**, add the repository and the token.
 
-That is all. The hub starts the runs when there is work; you never press anything, and code updates arrive by themselves
-because your workflow always runs this repository's `runner.yml`.
+The hub starts the runs when there is work, and code updates arrive by themselves because your workflow always runs this
+repository's `runner.yml`.
 
 ## Adding a family
 
-1. Put the scraper under `families/<name>/` with a `requirements.txt`. It reports to the hub with `scrape_hub_client` from `sdk/`.
-2. In `runner/worker.py`, write `run_<name>(work, ctx)`: check the assignment, build the command and return
-   `ctx.run(cmd, cwd, env, minutes)` (its exit code). Register it in `FAMILIES = {"gepnic": run_gepnic, "<name>": run_<name>}`.
-3. If it needs more than `pip install -r requirements.txt` (like gepnic's CPU-only torch), add a case to the Install step of
-   `runner.yml`.
-4. Teach the hub to hand out `{"family": "<name>", ...}` assignments.
+1. Create `s1d-labs/<name>` (public) with your scraper. It reports to the hub with `scrape_hub_client`.
+2. Add `scrape.json` at its root:
+
+   ```json
+   {"family": "<name>", "setup": ["pip install -r requirements.txt"], "tasks": {"crawl": ["python", "crawl.py"]}}
+   ```
+
+3. Put your projects in the pool from the family's side: `POST /api/projects/<project>/pool` on the hub with
+   `{"family": "<name>", "task": "crawl", "target": "<host>", "env": {...}, "probe": "<health check name>"}`
+   (family owner or hub owner). Your family's data model, records and pages stay in your repo.
 
 ## Versioning
 
-The hub chooses the code: it passes `ref` (a branch, tag or commit of this repository) when it starts a run, and every runner
-checks out exactly that. Members' workflow files point at `runner.yml@main` and never change; release tags (`v0.1.0`, ...) let
-the hub pin a known-good version while `main` moves on. The sdk carries its own version in `sdk/pyproject.toml`.
+The hub passes `ref` (a branch, tag or commit of this repository) when it starts a run. Members' workflow files point at
+`runner.yml@main` and never change; tags let the hub pin a known-good version. Family repos run at `main`.

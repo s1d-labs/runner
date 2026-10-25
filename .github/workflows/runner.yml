@@ -17,11 +17,11 @@ on:
         type: number
         default: 2
       ref:
-        description: "Git ref of s1d-labs/scrapers to run (the hub chooses it)"
+        description: "Git ref of s1d-labs/runner to run (the hub chooses it)"
         type: string
         default: "main"
       family:
-        description: "Scraper family (a directory under families/)"
+        description: "Scraper family: its code is the repo s1d-labs/<family>, checked out at main"
         type: string
         default: "gepnic"
       hub:
@@ -99,22 +99,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: s1d-labs/scrapers
+          repository: s1d-labs/runner
           ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/checkout@v4      # the family's own code: always a repo of the s1d-labs org
+        with:
+          repository: s1d-labs/${{ needs.plan.outputs.family }}
+          ref: main
+          path: family
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install
-        env:
-          FAMILY: ${{ needs.plan.outputs.family }}
         run: |
-          test -d "families/$FAMILY" || { echo "::error::no family $FAMILY at this ref"; exit 1; }
+          test -f family/scrape.json || { echo "::error::s1d-labs/${{ needs.plan.outputs.family }} has no scrape.json"; exit 1; }
           pip install ./sdk
-          if [ -f "families/$FAMILY/requirements.txt" ]; then pip install -r "families/$FAMILY/requirements.txt"; fi
-          case "$FAMILY" in
-            gepnic) pip install torch --index-url https://download.pytorch.org/whl/cpu ;;   # captcha CNN, CPU wheel
-          esac
+          cd family
+          python3 -c "import json; [print(c) for c in json.load(open('scrape.json')).get('setup', [])]" | while IFS= read -r cmd; do
+            echo "::group::$cmd"; bash -c "$cmd"; echo "::endgroup::"
+          done
       - name: Work
         env:
           JOB: ${{ matrix.job }}
@@ -129,7 +133,7 @@ jobs:
           pids=()
           for p in $(seq 0 $((PROCS - 1))); do
             ( set -o pipefail
-              python -m runner.worker --family "$FAMILY" --job-index $((JOB * PROCS + p)) --total-jobs $((JOBS * PROCS)) \
+              python -m runner.worker --family "$FAMILY" --family-dir family --job-index $((JOB * PROCS + p)) --total-jobs $((JOBS * PROCS)) \
                 --hub "$HUB" --max-hours "$MAX_HOURS" 2>&1 | tee "logs/worker-$p.log" ) &
             pids+=($!)
           done

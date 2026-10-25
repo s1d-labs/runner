@@ -1,22 +1,22 @@
 """Pool worker: ask the hub what to do next, run it, repeat.
 
-    python -m runner.worker --family gepnic --job-index 0 --total-jobs 2 [--hub URL] [--max-hours 5.5]
-    python -m runner.worker --family gepnic --dry-run --hub-fake        # local test: no hub, no portal
+    python -m runner.worker --family gepnic --family-dir family --job-index 0 --total-jobs 2 [--hub URL] [--max-hours 5.5]
+    python -m runner.worker --family gepnic --family-dir ../gepnic --dry-run --hub-fake    # local test: no hub, no site
 
 Each round the worker calls POST {hub}/api/v1/pool/assign with
     {"family": ..., "job_index": i, "total_jobs": n, "worker": "<runner name>/<pid>"}
 and the GitHub Actions OIDC token (the sdk mints it). The hub answers either
     {"work": null, "reason": "wait" | "done" | ...}
 or
-    {"work": {"family": "gepnic", "project": "gepnic-wbtenders", "task": "crawl", "target": "wbtenders.gov.in",
-              "env": {"PORTAL": "wbtenders.gov.in"}, "args": ["..."], "max_minutes": 60}}
-The hub never interprets task / target / env: the family wrote them into its projects' settings, and the family's
-function here uses them (target is only for the hub's politeness caps). Older hubs sent "portal" + "stage"; both work.
-The worker runs the family's own script for that assignment, streams its output, and asks again when it exits. On
-"wait" it sleeps 30-120 s (jittered); on "done" or any other reason it exits 0. It also stops at --max-hours.
-
-A new family is one function `run_<family>(work, ctx) -> exit code` added to FAMILIES. Only the standard library and the
-sdk (scrape_hub_client) are used here.
+    {"work": {"family": "...", "project": "...", "task": "crawl", "target": "example.gov.in", "env": {"X": "y"}, "args": [...],
+              "max_minutes": 60}}
+The hub never interprets task / target / env: the family wrote them into its projects' settings. The family's repo
+(s1d-labs/<family>, checked out at --family-dir) says in scrape.json which command each task runs:
+    {"family": "...", "setup": ["pip install -r requirements.txt"], "tasks": {"crawl": ["python", "crawl.py"]}}
+The worker runs that command in the family's checkout with the assignment's env, the assignment's args appended, and
+    SCRAPE_JOB_INDEX, SCRAPE_TOTAL_JOBS, SCRAPE_MAX_HOURS, SCRAPE_HUB_URL, SCRAPE_POOL_PROJECT, SCRAPE_POOL_TARGET
+then asks again when it exits. On "wait" it sleeps 30-120 s (jittered); on "done" or any other reason it exits 0. It stops at
+--max-hours. Nothing in here knows any family. Only the standard library and the sdk (scrape_hub_client) are used.
 """
 import argparse
 import json
@@ -33,7 +33,6 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FAMILIES_DIR = ROOT / "families"
 
 try:
     from scrape_hub_client import HubRejected, PoolClient
@@ -67,7 +66,7 @@ class Ctx:
         """Run cmd in cwd with os.environ + env_extra, stream its output, stop it GRACE_MINUTES after `minutes`.
         Returns its exit code (0 in a dry run)."""
         shown = " ".join(f"{k}={shlex.quote(v)}" for k, v in env_extra.items())
-        rel = os.path.relpath(cwd, ROOT)
+        rel = os.path.relpath(cwd)
         self.log(f"{'would run' if self.dry_run else 'run'}: (cd {rel} && {shown} {shlex.join(cmd)})  [limit {minutes:.0f} min]")
         if self.dry_run:
             return 0
@@ -113,18 +112,11 @@ class Ctx:
         return f"[worker {self.job_index}/{self.total_jobs}]"
 
 
-# -- families ---------------------------------------------------------------------------------------------------------------
-
-GEPNIC_SCRIPTS = {"crawl": "crawl.py", "count": "count.py"}
-
-
-def gepnic_portals():
-    path = FAMILIES_DIR / "gepnic" / "data" / "gepnic_portals.json"
-    return {p["portal"]: p for p in json.loads(path.read_text())["portals"]}
-
+# -- the family's commands ----------------------------------------------------------------------------------------------------
 
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-ENV_RESERVED = ("PATH", "PYTHON", "LD_", "HOME", "ACTIONS_", "GITHUB_", "RUNNER_", "SCRAPE_HUB")
+ENV_RESERVED = ("PATH", "PYTHON", "LD_", "HOME", "ACTIONS_", "GITHUB_", "RUNNER_", "SCRAPE_")
+TASK_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
 
 
 def family_env(work, ctx):
@@ -141,37 +133,35 @@ def family_env(work, ctx):
     return out
 
 
-def run_gepnic(work, ctx):
-    """GePNIC portals: `PORTAL=<portal> python crawl.py|count.py --job-index i --total-jobs n --max-hours h <args>` in
-    families/gepnic. The scripts derive the hub project (gepnic-<slug>, gepnic-<slug>-plan, or eprocure-* for
-    eprocure.gov.in) from PORTAL; work["project"] is only shown in the log."""
-    env = family_env(work, ctx)
-    stage, portal = work.get("task") or work.get("stage"), env.get("PORTAL") or work.get("portal")
-    script = GEPNIC_SCRIPTS.get(stage)
-    if not script:
-        ctx.log(f"gepnic: unknown stage {stage!r} (expected one of {sorted(GEPNIC_SCRIPTS)}); skipping")
-        return 2
-    known = gepnic_portals()
-    if not isinstance(portal, str) or portal not in known:
-        ctx.log(f"gepnic: portal {portal!r} is not in data/gepnic_portals.json (this checkout may be older than the hub's); skipping")
-        return 2
-    if known[portal].get("ui") == "gepnic2":
-        ctx.log(f"gepnic: {portal} runs GePNIC 2.0, which these scripts do not speak; skipping")
+def load_manifest(family_dir):
+    m = json.loads((Path(family_dir) / "scrape.json").read_text())
+    tasks = m.get("tasks") or {}
+    if not isinstance(tasks, dict) or not all(TASK_NAME.match(k) and isinstance(v, list) and v and all(isinstance(x, str) for x in v)
+                                              for k, v in tasks.items()):
+        raise ValueError("scrape.json: tasks must map task names to commands (lists of strings)")
+    return m
+
+
+def run_task(work, ctx, manifest):
+    """Run the family's command for this assignment's task; returns its exit code (2 when the assignment can't be run)."""
+    task = work.get("task") or work.get("stage") or ""
+    cmd = (manifest.get("tasks") or {}).get(task)
+    if not cmd:
+        ctx.log(f"no command for task {task!r} in scrape.json (has {sorted(manifest.get('tasks') or {})}); skipping")
         return 2
     extra = work.get("args") or []
     if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
-        ctx.log(f"gepnic: args must be a list of strings, got {extra!r}; skipping")
+        ctx.log(f"args must be a list of strings, got {extra!r}; skipping")
         return 2
     minutes = _minutes(work, ctx)
+    env = family_env(work, ctx)
     job_index = work.get("job_index", ctx.job_index)     # optional per-assignment slice; defaults to this worker's
     total_jobs = work.get("total_jobs", ctx.total_jobs)
-    ctx.log(f"gepnic: {stage} on {portal} (project {work.get('project') or '?'}), slice {job_index} of {total_jobs}")
-    cmd = [sys.executable, script, "--job-index", str(int(job_index)), "--total-jobs", str(int(total_jobs)),
-           "--max-hours", f"{minutes / 60:.3f}", *extra]
-    return ctx.run(cmd, FAMILIES_DIR / "gepnic", {**env, "PORTAL": portal, "SCRAPE_HUB_URL": ctx.hub}, minutes)
-
-
-FAMILIES = {"gepnic": run_gepnic}
+    env.update({"SCRAPE_JOB_INDEX": str(int(job_index)), "SCRAPE_TOTAL_JOBS": str(int(total_jobs)), "SCRAPE_MAX_HOURS": f"{minutes / 60:.3f}",
+                "SCRAPE_HUB_URL": ctx.hub, "SCRAPE_POOL_PROJECT": str(work.get("project") or ""), "SCRAPE_POOL_TARGET": str(work.get("target") or "")})
+    ctx.log(f"{task} for {work.get('project') or '?'} on {work.get('target') or '?'}, slice {job_index} of {total_jobs}")
+    argv = [sys.executable if cmd[0] == "python" else cmd[0], *cmd[1:], *extra]
+    return ctx.run(argv, ctx.family_dir, env, minutes)
 
 
 def _minutes(work, ctx):
@@ -188,21 +178,16 @@ def _minutes(work, ctx):
 class FakePool:
     """--hub-fake: hands out one made-up assignment, then says "done"."""
 
-    def __init__(self, family):
-        self.family, self.given, self.reason = family, False, ""
+    def __init__(self, family, task, env):
+        self.family, self.task, self.env, self.given, self.reason = family, task, env, False, ""
 
     def assign(self, family, job_index=0, total_jobs=1, worker=""):
         if self.given:
             self.reason = "done"
             return None
         self.given = True
-        if family == "gepnic":
-            portal = next((p for p, v in gepnic_portals().items() if v.get("ui") == "gepnic" and p != "eprocure.gov.in"),
-                          "eprocure.gov.in")
-            slug = re.sub(r"[^a-z0-9]+", "-", re.sub(r"\.(gov|nic|co)\.in", "", portal.lower())).strip("-")  # as portal.slug()
-            return {"family": "gepnic", "project": f"gepnic-{slug}", "task": "crawl", "target": portal,
-                    "env": {"PORTAL": portal}, "args": ["--stagger", "30"], "max_minutes": 60}
-        return {"family": family, "task": "run", "env": {}, "args": [], "max_minutes": 60}
+        return {"family": family, "project": f"{family}-test", "task": self.task, "target": "example.org", "env": dict(self.env),
+                "args": [], "max_minutes": 60}
 
 
 def _sleep(seconds, ctx):
@@ -211,7 +196,8 @@ def _sleep(seconds, ctx):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m runner.worker", description="scrape-hub pool worker")
-    ap.add_argument("--family", default="gepnic", help=f"scraper family ({', '.join(sorted(FAMILIES))})")
+    ap.add_argument("--family", required=True, help="scraper family (its code is the repo s1d-labs/<family>)")
+    ap.add_argument("--family-dir", default="family", help="checkout of the family's repo (holds scrape.json)")
     ap.add_argument("--job-index", type=int, default=0, help="this worker's slot, 0-based")
     ap.add_argument("--total-jobs", type=int, default=1, help="how many workers run in this pool run")
     ap.add_argument("--hub", default=os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me"))
@@ -219,14 +205,22 @@ def main(argv=None):
     ap.add_argument("--worker", default="", help="name sent to the hub (default <runner name>/<pid>)")
     ap.add_argument("--dry-run", action="store_true", help="print what would run instead of running it (stops after one assignment)")
     ap.add_argument("--hub-fake", action="store_true", help="do not call the hub: fake one assignment (use with --dry-run)")
+    ap.add_argument("--fake-task", default="", help="task of the fake assignment (default: the first in scrape.json)")
+    ap.add_argument("--fake-env", action="append", default=[], metavar="NAME=VALUE", help="env of the fake assignment")
     args = ap.parse_args(argv)
 
     def log(msg):
         print(f"{time.strftime('%H:%M:%S')} {ctx.prefix()} {msg}", flush=True)
 
     ctx = Ctx(args, log)
-    if args.family not in FAMILIES:
-        log(f"unknown family {args.family!r}; known: {', '.join(sorted(FAMILIES))}")
+    ctx.family_dir = Path(args.family_dir).resolve()
+    try:
+        manifest = load_manifest(ctx.family_dir)
+    except (OSError, ValueError) as e:
+        log(f"can't read the family's scrape.json in {ctx.family_dir}: {e}")
+        return 2
+    if manifest.get("family") and manifest["family"] != args.family:
+        log(f"{ctx.family_dir}/scrape.json is for family {manifest['family']!r}, not {args.family!r}")
         return 2
     if args.hub_fake and not args.dry_run:
         log("--hub-fake only makes sense with --dry-run (the fake assignment is not real work)")
@@ -242,7 +236,8 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
 
-    pool = FakePool(args.family) if args.hub_fake else PoolClient(ctx.hub)
+    fake_env = dict(e.split("=", 1) for e in args.fake_env if "=" in e)
+    pool = FakePool(args.family, args.fake_task or next(iter(manifest["tasks"]), "run"), fake_env) if args.hub_fake else PoolClient(ctx.hub)
     log(f"family {args.family}, hub {'(fake)' if args.hub_fake else ctx.hub}, worker {worker}, until {args.max_hours} h")
     errors = failures = done = 0
     while not STOP.is_set():
@@ -270,11 +265,11 @@ def main(argv=None):
             log(f"no more work ({pool.reason or 'no reason given'}); {done} assignments done")
             return 0
         family = work.get("family") or args.family
-        if family != args.family or family not in FAMILIES:
+        if family != args.family:
             log(f"the hub sent work for family {family!r}, but this worker runs {args.family!r}; skipping it")
             rc = 2
         else:
-            rc = FAMILIES[family](work, ctx)
+            rc = run_task(work, ctx, manifest)
         done += 1
         if rc == 0:
             failures = 0
