@@ -1,0 +1,145 @@
+name: scrape pool runner
+
+# Reusable workflow: members' scrape-runner repos (made from the s1d-labs/scrape-runner template) call this, and so does
+# that template repo itself. It starts `jobs` runners x `procs` pool workers; each worker asks the hub
+# (POST {hub}/api/v1/pool/assign) what to scrape, runs it, and asks again until the hub says "done" or max_hours pass.
+# The hub starts these runs and picks `ref`, so the caller's file never changes. No secrets: the hub trusts the GitHub
+# OIDC token (repository = the caller's repo, job_workflow_ref = this file).
+on:
+  workflow_call:
+    inputs:
+      jobs:
+        description: "Runners (1-256)"
+        type: number
+        default: 1
+      procs:
+        description: "Worker processes per runner (1-16)"
+        type: number
+        default: 2
+      ref:
+        description: "Git ref of s1d-labs/scrapers to run (the hub chooses it)"
+        type: string
+        default: "main"
+      family:
+        description: "Scraper family (a directory under families/)"
+        type: string
+        default: "gepnic"
+      hub:
+        description: "scrape-hub base URL (also the OIDC audience)"
+        type: string
+        default: "https://scrape.s1d.me"
+      max_hours:
+        description: "Each worker stops taking work after this many hours (at most 5.6)"
+        type: number
+        default: 5.5
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      jobs: ${{ steps.plan.outputs.jobs }}
+      procs: ${{ steps.plan.outputs.procs }}
+      family: ${{ steps.plan.outputs.family }}
+      hub: ${{ steps.plan.outputs.hub }}
+      max_hours: ${{ steps.plan.outputs.max_hours }}
+    steps:
+      - id: plan
+        env:
+          JOBS: ${{ inputs.jobs }}
+          PROCS: ${{ inputs.procs }}
+          FAMILY: ${{ inputs.family }}
+          HUB: ${{ inputs.hub }}
+          MAX_HOURS: ${{ inputs.max_hours }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, re, sys
+          def num(name, lo, hi, default, cast):
+              try:
+                  v = cast(float(os.environ.get(name) or default))
+              except ValueError:
+                  v = default
+              return max(lo, min(hi, v))
+          jobs = num("JOBS", 1, 256, 1, int)
+          procs = num("PROCS", 1, 16, 2, int)
+          hours = num("MAX_HOURS", 0.05, 5.6, 5.5, float)
+          family = os.environ.get("FAMILY", "")
+          hub = os.environ.get("HUB", "").rstrip("/")
+          if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,40}", family):
+              sys.exit(f"bad family {family!r}")
+          if not re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]+)?", hub):
+              sys.exit(f"bad hub URL {hub!r} (https://host only)")
+          out = {"matrix": json.dumps(list(range(jobs)), separators=(",", ":")), "jobs": jobs, "procs": procs, "family": family, "hub": hub,
+                 "max_hours": hours}
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              for k, v in out.items():
+                  f.write(f"{k}={v}\n")
+          print(f"{jobs} runners x {procs} workers = {jobs * procs} workers, family {family}, hub {hub}, {hours} h")
+          EOF
+
+  work:
+    name: Runner ${{ matrix.job }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      id-token: write   # the workers mint an OIDC token for the hub's audience
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: s1d-labs/scrapers
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        env:
+          FAMILY: ${{ needs.plan.outputs.family }}
+        run: |
+          test -d "families/$FAMILY" || { echo "::error::no family $FAMILY at this ref"; exit 1; }
+          pip install ./sdk
+          if [ -f "families/$FAMILY/requirements.txt" ]; then pip install -r "families/$FAMILY/requirements.txt"; fi
+          case "$FAMILY" in
+            gepnic) pip install torch --index-url https://download.pytorch.org/whl/cpu ;;   # captcha CNN, CPU wheel
+          esac
+      - name: Work
+        env:
+          JOB: ${{ matrix.job }}
+          JOBS: ${{ needs.plan.outputs.jobs }}
+          PROCS: ${{ needs.plan.outputs.procs }}
+          FAMILY: ${{ needs.plan.outputs.family }}
+          HUB: ${{ needs.plan.outputs.hub }}
+          MAX_HOURS: ${{ needs.plan.outputs.max_hours }}
+          SCRAPE_HUB_URL: ${{ needs.plan.outputs.hub }}
+        run: |
+          mkdir -p logs
+          pids=()
+          for p in $(seq 0 $((PROCS - 1))); do
+            ( set -o pipefail
+              python -m runner.worker --family "$FAMILY" --job-index $((JOB * PROCS + p)) --total-jobs $((JOBS * PROCS)) \
+                --hub "$HUB" --max-hours "$MAX_HOURS" 2>&1 | tee "logs/worker-$p.log" ) &
+            pids+=($!)
+          done
+          fail=0
+          for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+          exit $fail
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: logs-${{ matrix.job }}
+          path: logs/
+          retention-days: 5
+          if-no-files-found: ignore
