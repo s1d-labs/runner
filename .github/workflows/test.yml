@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+    paths: ["sdk/**", "runner/**", ".github/workflows/test.yml"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q ./sdk pytest
+      - run: python -m pytest sdk/tests -q

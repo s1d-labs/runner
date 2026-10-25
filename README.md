@@ -52,6 +52,22 @@ pip install ./sdk
 python -m runner.worker --family gepnic --family-dir ../gepnic --dry-run --hub-fake --fake-env PORTAL=wbtenders.gov.in
 ```
 
+## Checking a scraper: `scrape-check`
+
+The client ships a local stand-in for the hub (`scrape_hub_client.testhub`) and a checker that uses it:
+
+```sh
+pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@main#subdirectory=sdk"
+cd my-family-repo && scrape-check            # or: python -m scrape_hub_client.check
+```
+
+It reads `scrape.json`, runs `setup_family.py` against the stand-in, then runs one task exactly as the pool runner does on 3 real queue
+items (the hub reports "paused" for the first 5 seconds), and again on the same items. It reports PASS / WARN / FAIL per check: run
+started and closed, every claimed item completed, records stored, `n_http` / `t_http_s` reported, pause respected, exit when the
+queue is empty, calls accepted, stable record ids on the rerun. Exit code 1 if anything failed; details in `.scrape-check/`.
+Families without `setup_family.py`: `scrape-check --project P --task T --env K=V --item '{"key": ..., "payload": {...}}'`.
+The checker's own tests: `python -m pytest sdk/tests`.
+
 ## Joining the pool (members)
 
 1. On [s1d-labs/scrape-runner](https://github.com/s1d-labs/scrape-runner), click **Use this template** and create

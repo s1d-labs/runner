@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scrape-hub-client"
-version = "0.4.0"
+version = "0.5.0"
 description = "Client for scrape-hub: report scraper runs, records and metrics, claim work from the hub queue, and take pool assignments"
 requires-python = ">=3.9"
 dependencies = ["requests>=2.28"]
+
+[project.scripts]
+scrape-check = "scrape_hub_client.check:main"
 
 [tool.setuptools]
 packages = ["scrape_hub_client"]
