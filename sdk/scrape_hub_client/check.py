@@ -31,7 +31,8 @@ class Report:
 
     def add(self, level, check, detail=""):
         self.rows.append({"level": level, "check": check, "detail": detail})
-        mark = {"PASS": "\033[32mPASS\033[0m", "WARN": "\033[33mWARN\033[0m", "FAIL": "\033[31mFAIL\033[0m", "INFO": "INFO"}[level]
+        colour = {"PASS": "32", "WARN": "33", "FAIL": "31"}.get(level) if sys.stdout.isatty() else None
+        mark = f"\033[{colour}m{level}\033[0m" if colour else level
         print(f"  {mark}  {check}" + (f": {detail}" if detail else ""), flush=True)
 
     def ok(self, cond, check, good="", bad="", warn=False):
