@@ -23,7 +23,7 @@ on:
       family:
         description: "Scraper family: its code is the repo s1d-labs/<family>, checked out at main"
         type: string
-        default: "gepnic"
+        default: ""
       hub:
         description: "scrape-hub base URL (also the OIDC audience)"
         type: string

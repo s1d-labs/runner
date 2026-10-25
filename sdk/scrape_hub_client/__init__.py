@@ -17,11 +17,11 @@ In a workflow, grant `permissions: id-token: write`; the client then mints a sho
 hub's audience, which is how the hub knows the real repository. Outside Actions, set SCRAPE_HUB_TOKEN (the hub's
 legacy token) and SCRAPE_HUB_REPO.
 
-Pool workers (runner/worker.py in s1d-labs/scrapers) ask the hub what to do next:
+Pool workers (runner/worker.py in s1d-labs/runner) ask the hub what to do next:
 
     from scrape_hub_client import PoolClient
     pool = PoolClient()
-    work = pool.assign("gepnic", job_index=0, total_jobs=1, worker="runner-1/1234")
+    work = pool.assign("myfamily", job_index=0, total_jobs=1, worker="runner-1/1234")
     if work is None:
         print(pool.reason)                 # "wait": try again later; "done" (or anything else): stop
 """
@@ -181,7 +181,7 @@ class HubClient(_Auth):
             self.metrics[name] += value
 
     def failure(self, kind, key, reason="", **detail):
-        """Record something that could not be fetched, e.g. hub.failure("document", "2018_X_1/report.pdf", "portal refused", org_name="..").
+        """Record something that could not be fetched, e.g. hub.failure("document", "2018_X_1/report.pdf", "site refused", org_name="..").
         One row per (kind, key); reporting it again updates the row and counts another attempt."""
         with self.lock:
             self.failures.append({"kind": kind, "key": str(key)[:300], "reason": str(reason)[:500], "detail": detail})
@@ -242,6 +242,11 @@ class HubClient(_Auth):
         self.call("POST", f"/api/v1/runs/{self.run_id}/complete",
                   {"keys": list(keys), "status": status, "error": error, "fetched": fetched})
 
+    def extra(self, name, body):
+        """Call an endpoint of this run's family app through the hub (POST /api/v1/runs/<run>/<name>; see docs/family-apps.md in
+        s1d-labs/scrape-hub). The methods below are such extras, kept here for scrapers that already use them."""
+        return self.call("POST", f"/api/v1/runs/{self.run_id}/{name}", body)
+
     def known(self, ids, chunk=1000):
         """The subset of these record ids the hub already stores (with parsed fields), for skipping work already done."""
         out = []
@@ -264,11 +269,11 @@ class HubClient(_Auth):
                       "patches": [{"record_id": r, "value": v} for r, v in patches[i:i + 500]]})
 
     def window_stored(self, org_id, from_date, to_date):
-        """How many tenders of this organisation and date window the hub already holds with a real title."""
+        """A family app extra (docs/family-apps.md in s1d-labs/scrape-hub): how many records of this organisation and date range are stored."""
         return self.call("POST", f"/api/v1/runs/{self.run_id}/window-stored", {"org_id": str(org_id), "from_date": from_date, "to_date": to_date})["stored"]
 
     # Upload links: worker threads ask at almost the same moment, so requests arriving within LINK_WAIT seconds of each other are sent to
-    # the hub as one call (up to LINK_MAX files). At thousands of tenders a minute this cuts the hub's request load several times over.
+    # the hub as one call (up to LINK_MAX files). At thousands of records a minute this cuts the hub's request load several times over.
     LINK_WAIT, LINK_MAX = 0.2, 250
 
     def _links(self, files):
@@ -357,7 +362,7 @@ class HubClient(_Auth):
 class PoolClient(_Auth):
     """Asks the hub's pool which work this runner process should do next (POST /api/v1/pool/assign).
 
-    The hub picks the family's portal, project and stage; the runner only runs it. `audience` is the OIDC audience to mint
+    The hub picks the project, task, target and env; the runner only runs the family's command for it. `audience` is the OIDC audience to mint
     tokens for: by default SCRAPE_HUB_AUDIENCE, else the hub URL given here (else SCRAPE_HUB_URL).
     """
 
@@ -368,7 +373,7 @@ class PoolClient(_Auth):
         self.last = {}
 
     def assign(self, family, job_index=0, total_jobs=1, worker="", retries=4):
-        """The next assignment as a dict ({"family", "portal", "project", "stage", "args", "max_minutes"}), or None when the
+        """The next assignment as a dict ({"family", "project", "task", "target", "env", "args", "max_minutes"}), or None when the
         hub has nothing for this worker; then `self.reason` is the hub's reason ("wait" = ask again later, "done" = stop).
         Raises HubRejected when the hub refuses this caller, or the last error after `retries` failed attempts."""
         out = self.call("POST", "/api/v1/pool/assign", {"family": family, "job_index": int(job_index),

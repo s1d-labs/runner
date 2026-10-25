@@ -1,7 +1,7 @@
 """Pool worker: ask the hub what to do next, run it, repeat.
 
-    python -m runner.worker --family gepnic --family-dir family --job-index 0 --total-jobs 2 [--hub URL] [--max-hours 5.5]
-    python -m runner.worker --family gepnic --family-dir ../gepnic --dry-run --hub-fake    # local test: no hub, no site
+    python -m runner.worker --family myfamily --family-dir family --job-index 0 --total-jobs 2 [--hub URL] [--max-hours 5.5]
+    python -m runner.worker --family myfamily --family-dir ../myfamily --dry-run --hub-fake    # local test: no hub, no site
 
 Each round the worker calls POST {hub}/api/v1/pool/assign with
     {"family": ..., "job_index": i, "total_jobs": n, "worker": "<runner name>/<pid>"}
@@ -71,7 +71,7 @@ class Ctx:
         if self.dry_run:
             return 0
         env = dict(os.environ)
-        env.pop("SCRAPE_PROJECT", None)   # the project follows from the assignment (e.g. PORTAL), never from a stray variable
+        env.pop("SCRAPE_PROJECT", None)   # the project follows from the assignment, never from a stray variable
         env.update(env_extra)
         env["PYTHONUNBUFFERED"] = "1"
         t0 = time.time()
