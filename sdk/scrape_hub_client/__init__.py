@@ -34,8 +34,8 @@ from collections import Counter
 
 import requests
 
-__version__ = "0.3.0"
-__all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue"]
+__version__ = "0.4.0"
+__all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue", "set_pool", "set_probes"]
 
 HUB_URL = os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me").rstrip("/")
 AUDIENCE = os.environ.get("SCRAPE_HUB_AUDIENCE", HUB_URL)
@@ -119,6 +119,21 @@ def seed_queue(project, items, reset_failed=False, hub_url=None, chunk=500):
         r = a.call("POST", f"/api/v1/projects/{project}/queue", {"items": items[i:i + chunk], "reset_failed": reset_failed})
         added, reset = added + r["added"], reset + r["reset"]
     return {"added": added, "reset": reset}
+
+
+def set_pool(project, family, task, target="", env=None, probe=None, max_workers=None, pool=True, hub_url=None):
+    """Put a project in the pool (or take it out with pool=False). Only the family's own repo, s1d-labs/<family>, may do this
+    (from GitHub Actions). task: a task name from your scrape.json; target: the host the work hits (the hub caps workers per
+    target); env: what your command needs; probe: the name of one of your health checks (work holds while it fails)."""
+    body = {"pool": pool, "family": family, "task": task, "target": target, "env": dict(env or {})}
+    body.update({k: v for k, v in (("probe", probe), ("max_workers", max_workers)) if v is not None})
+    return _Auth(hub_url).call("PUT", f"/api/v1/projects/{project}/pool", body)
+
+
+def set_probes(family, targets, hub_url=None):
+    """Replace the family's health checks: targets = [{"name": "myfamily:site", "url": "https://...", "expect": "text on the page"}].
+    The hub checks each once a minute (up = HTTP 200 within 20 s and, if given, `expect` in the page). Family repo only."""
+    return _Auth(hub_url).call("PUT", f"/api/v1/families/{family}/probes", {"targets": list(targets)})
 
 
 def list_queue(project, status="pending", hub_url=None, page=1000):
