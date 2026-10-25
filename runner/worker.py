@@ -8,8 +8,10 @@ Each round the worker calls POST {hub}/api/v1/pool/assign with
 and the GitHub Actions OIDC token (the sdk mints it). The hub answers either
     {"work": null, "reason": "wait" | "done" | ...}
 or
-    {"work": {"family": "gepnic", "portal": "wbtenders.gov.in", "project": "gepnic-wbtenders",
-              "stage": "crawl" | "count", "args": ["..."], "max_minutes": 60}}
+    {"work": {"family": "gepnic", "project": "gepnic-wbtenders", "task": "crawl", "target": "wbtenders.gov.in",
+              "env": {"PORTAL": "wbtenders.gov.in"}, "args": ["..."], "max_minutes": 60}}
+The hub never interprets task / target / env: the family wrote them into its projects' settings, and the family's
+function here uses them (target is only for the hub's politeness caps). Older hubs sent "portal" + "stage"; both work.
 The worker runs the family's own script for that assignment, streams its output, and asks again when it exits. On
 "wait" it sleeps 30-120 s (jittered); on "done" or any other reason it exits 0. It also stops at --max-hours.
 
@@ -121,11 +123,30 @@ def gepnic_portals():
     return {p["portal"]: p for p in json.loads(path.read_text())["portals"]}
 
 
+ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+ENV_RESERVED = ("PATH", "PYTHON", "LD_", "HOME", "ACTIONS_", "GITHUB_", "RUNNER_", "SCRAPE_HUB")
+
+
+def family_env(work, ctx):
+    """The family's env from the assignment, minus anything that could change how the runner itself works."""
+    env = work.get("env") or {}
+    if not isinstance(env, dict):
+        return {}
+    out = {}
+    for k, v in env.items():
+        if isinstance(k, str) and ENV_NAME.match(k) and not k.startswith(ENV_RESERVED) and isinstance(v, (str, int, float)):
+            out[k] = str(v)
+        else:
+            ctx.log(f"ignoring env {k!r} from the hub")
+    return out
+
+
 def run_gepnic(work, ctx):
     """GePNIC portals: `PORTAL=<portal> python crawl.py|count.py --job-index i --total-jobs n --max-hours h <args>` in
     families/gepnic. The scripts derive the hub project (gepnic-<slug>, gepnic-<slug>-plan, or eprocure-* for
     eprocure.gov.in) from PORTAL; work["project"] is only shown in the log."""
-    stage, portal = work.get("stage"), work.get("portal")
+    env = family_env(work, ctx)
+    stage, portal = work.get("task") or work.get("stage"), env.get("PORTAL") or work.get("portal")
     script = GEPNIC_SCRIPTS.get(stage)
     if not script:
         ctx.log(f"gepnic: unknown stage {stage!r} (expected one of {sorted(GEPNIC_SCRIPTS)}); skipping")
@@ -147,7 +168,7 @@ def run_gepnic(work, ctx):
     ctx.log(f"gepnic: {stage} on {portal} (project {work.get('project') or '?'}), slice {job_index} of {total_jobs}")
     cmd = [sys.executable, script, "--job-index", str(int(job_index)), "--total-jobs", str(int(total_jobs)),
            "--max-hours", f"{minutes / 60:.3f}", *extra]
-    return ctx.run(cmd, FAMILIES_DIR / "gepnic", {"PORTAL": portal, "SCRAPE_HUB_URL": ctx.hub}, minutes)
+    return ctx.run(cmd, FAMILIES_DIR / "gepnic", {**env, "PORTAL": portal, "SCRAPE_HUB_URL": ctx.hub}, minutes)
 
 
 FAMILIES = {"gepnic": run_gepnic}
@@ -179,9 +200,9 @@ class FakePool:
             portal = next((p for p, v in gepnic_portals().items() if v.get("ui") == "gepnic" and p != "eprocure.gov.in"),
                           "eprocure.gov.in")
             slug = re.sub(r"[^a-z0-9]+", "-", re.sub(r"\.(gov|nic|co)\.in", "", portal.lower())).strip("-")  # as portal.slug()
-            return {"family": "gepnic", "portal": portal, "project": f"gepnic-{slug}", "stage": "crawl",
-                    "args": ["--stagger", "30"], "max_minutes": 60}
-        return {"family": family, "stage": "run", "args": [], "max_minutes": 60}
+            return {"family": "gepnic", "project": f"gepnic-{slug}", "task": "crawl", "target": portal,
+                    "env": {"PORTAL": portal}, "args": ["--stagger", "30"], "max_minutes": 60}
+        return {"family": family, "task": "run", "env": {}, "args": [], "max_minutes": 60}
 
 
 def _sleep(seconds, ctx):
