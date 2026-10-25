@@ -21,6 +21,11 @@ permissions:
 env:
   SCRAPE_HUB_URL: https://scrape.s1d.me
 
+# The scraper lives in families/gepnic of this monorepo; the hub client is installed from ./sdk.
+defaults:
+  run:
+    working-directory: families/gepnic
+
 jobs:
   consolidate:
     runs-on: ubuntu-latest
@@ -29,5 +34,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install requests beautifulsoup4 lxml "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - run: pip install requests beautifulsoup4 lxml ../../sdk
       - run: python consolidate.py --cap ${{ inputs.cap }} --buckets ${{ inputs.buckets }} ${{ inputs.dry_run && '--dry-run' || '' }}

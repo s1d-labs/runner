@@ -20,6 +20,11 @@ permissions:
 env:
   SCRAPE_HUB_URL: https://scrape.s1d.me
 
+# The scraper lives in families/gepnic of this monorepo; the hub client is installed from ./sdk.
+defaults:
+  run:
+    working-directory: families/gepnic
+
 jobs:
   backfill:
     name: Slice ${{ matrix.job_index }}
@@ -36,7 +41,7 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
-        run: pip install requests beautifulsoup4 "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+        run: pip install requests beautifulsoup4 ../../sdk
       - name: Parse the saved pages
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
         env:

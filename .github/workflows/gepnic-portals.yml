@@ -52,6 +52,11 @@ permissions:
 env:
   SCRAPE_HUB_URL: https://scrape.s1d.me
 
+# The scraper lives in families/gepnic of this monorepo; the hub client is installed from ./sdk.
+defaults:
+  run:
+    working-directory: families/gepnic
+
 jobs:
   seed:
     name: Seed every portal
@@ -63,7 +68,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install requests beautifulsoup4 lxml "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - run: pip install requests beautifulsoup4 lxml ../../sdk
       - name: Seed
         run: |
           fail=0
@@ -89,7 +94,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q requests "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - run: pip install -q requests ../../sdk
       - id: plan
         run: |
           stage="${{ inputs.stage }}"; [ "$stage" = seed ] && stage=count
@@ -118,7 +123,7 @@ jobs:
       - name: Install dependencies
         if: ${{ matrix.job < fromJSON(inputs.total_jobs) }}
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.txt ../../sdk
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Work
         if: ${{ matrix.job < fromJSON(inputs.total_jobs) }}
@@ -158,7 +163,7 @@ jobs:
         if: ${{ always() && matrix.job < fromJSON(inputs.total_jobs) }}
         with:
           name: logs-${{ matrix.job }}
-          path: "*.log"
+          path: "families/gepnic/*.log"
           retention-days: 5
 
   continue:
@@ -172,7 +177,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q requests "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - run: pip install -q requests ../../sdk
       - name: Next run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -181,6 +186,6 @@ jobs:
           left=$(python assign.py --hub --stage "$STAGE" --slots 1 --only "${{ inputs.portals }}" | python -c "import json,sys; print(len(json.load(sys.stdin)['left']))")
           if [ "$left" = 0 ]; then echo "every portal is done with $STAGE"; [ "$STAGE" = count ] && echo "counting finished: start the crawl with stage=crawl start_crawl=true when ready"; exit 0; fi
           echo "$left portals still have $STAGE work: starting another $STAGE run"
-          gh workflow run gepnic.yml -f stage="$STAGE" -f portals="${{ inputs.portals }}" -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" \
+          gh workflow run gepnic-portals.yml -f stage="$STAGE" -f portals="${{ inputs.portals }}" -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" \
             -f per_server="${{ inputs.per_server }}" -f documents="${{ inputs.documents }}" -f max_items=0 -f max_tenders=0 -f chain=true \
             -f start_crawl="${{ inputs.start_crawl }}"

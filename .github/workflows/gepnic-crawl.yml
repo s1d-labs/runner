@@ -38,6 +38,11 @@ permissions:
 env:
   SCRAPE_HUB_URL: https://scrape.s1d.me
 
+# The scraper lives in families/gepnic of this monorepo; the hub client is installed from ./sdk.
+defaults:
+  run:
+    working-directory: families/gepnic
+
 jobs:
   crawl:
     name: Slice ${{ matrix.job_index }}
@@ -55,7 +60,7 @@ jobs:
       - name: Install dependencies
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
         run: |
-          pip install -r requirements.txt
+          pip install -r requirements.txt ../../sdk
           pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Scrape windows
         if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
@@ -96,7 +101,7 @@ jobs:
       - name: Count the windows still waiting
         id: left
         run: |
-          pip install -q "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+          pip install -q ../../sdk
           echo "n=$(python remaining.py "${{ inputs.project || 'eprocure-tenders' }}")" >> "$GITHUB_OUTPUT"
       - name: Start the next run
         if: ${{ steps.left.outputs.n != '0' }}
@@ -104,5 +109,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           echo "${{ steps.left.outputs.n }} windows still need work: starting the next run"
-          gh workflow run crawl.yml -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" -f stagger="${{ inputs.stagger }}" \
+          gh workflow run gepnic-crawl.yml -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" -f stagger="${{ inputs.stagger }}" \
             -f documents="${{ inputs.documents }}" -f project="${{ inputs.project }}" -f rescrape=false -f max_items=0 -f max_tenders=0

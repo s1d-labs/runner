@@ -4,4 +4,4 @@ lxml
 numpy
 opencv-python-headless
 # torch is installed separately from the CPU wheel index (see the workflow)
-scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client
+# scrape-hub-client comes from this monorepo: pip install ../../sdk (the workflows do this)
