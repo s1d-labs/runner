@@ -1,0 +1,74 @@
+name: Plan eprocure windows (count tenders per month)
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_jobs:
+        description: "Parallel runners (the matrix has 20 slots; slots >= this value exit immediately)"
+        default: "20"
+      seed:
+        description: "Seed the queues first (safe to repeat: existing items are kept)"
+        type: boolean
+        default: true
+      from_year:
+        description: "First year"
+        default: "2011"
+      to_year:
+        description: "Last year"
+        default: "2026"
+      split_over:
+        description: "Org-years with more tenders than this are counted month by month"
+        default: "600"
+      chunk_max:
+        description: "A window with more tenders than this is halved until it fits"
+        default: "1200"
+      max_items:
+        description: "Stop each runner after this many count tasks (0 = no limit; use 5 for a smoke test)"
+        default: "0"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SCRAPE_HUB_URL: https://scrape.s1d.me
+
+jobs:
+  seed:
+    name: Seed queues
+    if: ${{ inputs.seed }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4 lxml "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - run: python plan.py --from-year ${{ inputs.from_year }} --to-year ${{ inputs.to_year }} --split-over ${{ inputs.split_over }} --chunk-max ${{ inputs.chunk_max }}
+
+  count:
+    name: Count slice ${{ matrix.job_index }}
+    needs: seed
+    if: ${{ !cancelled() && (needs.seed.result == 'success' || needs.seed.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        job_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
+        run: |
+          pip install -r requirements.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Count windows
+        if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
+        run: >
+          python count.py
+          --job-index ${{ matrix.job_index }} --total-jobs ${{ inputs.total_jobs }}
+          --max-items ${{ inputs.max_items }}

@@ -1,0 +1,33 @@
+name: Consolidate scrape queue (merge small windows, balance runners)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cap:
+        description: "Largest merged window, in tenders"
+        default: "1200"
+      buckets:
+        description: "Runner slices to balance across (use the Scrape workflow's total_jobs)"
+        default: "20"
+      dry_run:
+        description: "Only print what would change"
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SCRAPE_HUB_URL: https://scrape.s1d.me
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4 lxml "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - run: python consolidate.py --cap ${{ inputs.cap }} --buckets ${{ inputs.buckets }} ${{ inputs.dry_run && '--dry-run' || '' }}

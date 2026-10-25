@@ -1,0 +1,80 @@
+{
+    "Organisation Chain": "National Testing Agency",
+    "Tender ID": "2021_NTA_628462_1",
+    "Tender Ref No": "NTA/2021-22/032",
+    "Tender Title": "Tender for Conduct of Computer Based Test Examination",
+    "bids": [
+        {
+            "sno": "1",
+            "bid_number": "2305138",
+            "bidder_name": "Eduquity Career Technologies Pvt Ltd",
+            "submitted_date": "20-Jun-2021 06:08 PM",
+            "status": "Admitted-Finance",
+            "remarks": "",
+            "status_updated_on": "26-Nov-2021 04:08 PM"
+        },
+        {
+            "sno": "2",
+            "bid_number": "2301024",
+            "bidder_name": "Edutest Solutions Private Limited",
+            "submitted_date": "25-May-2021 11:03 AM",
+            "status": "Rejected-Technical",
+            "remarks": "Does not fulfill Technical Criteria",
+            "status_updated_on": "23-Nov-2021 12:59 PM"
+        },
+        {
+            "sno": "3",
+            "bid_number": "2322494",
+            "bidder_name": "MEL Training and Assessments Limited",
+            "submitted_date": "21-Jun-2021 01:37 PM",
+            "status": "Admitted-Finance",
+            "remarks": "",
+            "status_updated_on": "26-Nov-2021 04:08 PM"
+        },
+        {
+            "sno": "4",
+            "bid_number": "2304000",
+            "bidder_name": "NSEiT Limited",
+            "submitted_date": "21-Jun-2021 02:17 PM",
+            "status": "Admitted-Finance",
+            "remarks": "",
+            "status_updated_on": "26-Nov-2021 04:08 PM"
+        },
+        {
+            "sno": "5",
+            "bid_number": "2299695",
+            "bidder_name": "TATA Consultancy Services Limited",
+            "submitted_date": "21-Jun-2021 12:42 PM",
+            "status": "Admitted-Finance",
+            "remarks": "",
+            "status_updated_on": "26-Nov-2021 04:08 PM"
+        }
+    ],
+    "pdf_documents": [
+        {
+            "filename": "2021_NTA_628462_1_techsummary_661270.pdf",
+            "url": "https://eprocure.gov.in/eprocure/app?component=%24DirectLink_4&page=FrontEndViewBidSummaryDetailsPrint&service=direct&session=T&sp=Szgqdi7QXF2ue2yZJZpCdMg%3D%3D",
+            "size": "Unknown",
+            "downloaded": false,
+            "is_pdf": true
+        },
+        {
+            "filename": "2021_NTA_628462_1_doc_1.pdf",
+            "url": "https://eprocure.gov.in/eprocure/app?component=%24DirectLink_5&page=FrontEndViewBidSummaryDetailsPrint&service=direct&session=T&sp=ZH4sIAAAAAAAAAF1STU9TQRSdFhsq3x8BdGHSxMSA0YdoRBM2QEtMoeBHu8GYmGnf8Dowb2aYmQevJhp04YYFLnTnD3DBjh%2BgYeVClqxF4sINLkxMjG6882jLg26ae%2B4559175m4foZRW6Kon1hxOK45HpGMId4lyCDfU1JxSVM2sYRZgQwW%2FjX%2FcGjr6NZBEAwXUVabufUk45V4OG2JQT2EZr%2BHRwFA2apGJAuoFTjEoZ5nQddoqeoESzUZMX290V6qYKkmUFnwB%2B2Dbd2zLMPdGi0YBfeI0rVSTkTpZQB0V4fvUGEKmXLeODTaxrNU8iDR5tzlvZFwQkW0Xae4ac%2B0mIeSiAXxEMIgbH1uijMxTmPGEmraYnTteF%2BmzM3vkRFBmNqAkjcZsgUSoLq2LosEemaauC2sa1B%2BTTAvBCOZ2SCYwrpgAM6G8E71UVjhPiDmdaLuEb1FdjUGdmno29yxRJt8waAskGLvEna7VkY4GEpO2rQu1kjfEr%2BtCCSfUZ8d09CpzShCHNtiXVy7sf04UP5IkSuRRimMudKhQV0S0F%2BJYz%2Bryy8TcornYglAo19MIJZ4%2FvLf3KUTwkxJeKEcVqRihMsNTrk%2F5iEHpPDdEccwMunu2m5kVlJtMEy7CccFfVnAdMIOhNTwTYn8EnM%2BXSKUKR48ZFC3SXTJo0ACkA9%2FHqvZ0fHzs5p0bDjRgvZ5oavsKzvHDbezszo6s%2FDsHy%2BVQyp4MCU%2FRFgK%2FTNTr7XeX2t8ebCbtepOvrj8Z%2Fr27pRspRMTo7ja%2Fv%2FmydfkruM023Gy2vTYGlP52CJLeE0n9EPYyamP%2F%2Fd%2BfoHrcUElITWqr7Y%2B0rTIbq1If%2FkRV63HSczuHB2HntbHJGKVtaPA%2FocpktRYEAAA%3D",
+            "size": "Unknown",
+            "downloaded": false,
+            "is_pdf": true
+        },
+        {
+            "filename": "2021_NTA_628462_1_BOQ_Comparative_Chart.pdf",
+            "url": "https://eprocure.gov.in/eprocure/app?component=BOQ&page=FrontEndViewBidSummaryDetailsPrint&service=direct&session=T&sp=SZDbWL0GGFkUytco%2FT%2BMR%2BA%3D%3D",
+            "size": "Unknown",
+            "downloaded": false,
+            "is_pdf": true
+        }
+    ],
+    "sno": "7.",
+    "stage": "Financial Bid Opening",
+    "view_link": "https://eprocure.gov.in/eprocure/app?component=view&page=WebTenderStatusLists&service=direct&session=T&sp=SZDbWL0GGFkUytco%2FT%2BMR%2BA%3D%3D",
+    "tender_id": "2021_NTA_628462_1"
+}

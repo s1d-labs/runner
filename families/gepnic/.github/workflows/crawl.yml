@@ -1,0 +1,108 @@
+name: Scrape eprocure windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_jobs:
+        description: "Parallel runners (the matrix has 20 slots; slots >= this value exit immediately)"
+        default: "20"
+      max_items:
+        description: "Stop each runner after this many windows (0 = no limit; use 2-5 for a smoke test)"
+        default: "0"
+      max_tenders:
+        description: "Cap tenders per window (0 = no limit; use 5-60 for a smoke test)"
+        default: "0"
+      procs:
+        description: "Crawler processes per runner. One Python process tops out near 100-350 tenders/min (it is CPU-bound); a runner has 4 cores."
+        default: "4"
+      stagger:
+        description: "Spread the start of all processes over this many seconds (protects the portal's search page)"
+        default: "120"
+      project:
+        description: "Hub project to use (leave empty for the real one; eprocure-eval for speed experiments)"
+        default: ""
+      rescrape:
+        description: "Fetch tenders again even if already stored (used for speed experiments on windows that are already done)"
+        type: boolean
+        default: false
+      documents:
+        description: "Also download each tender's documents (PDF reports, BOQ) and store them in R2. The raw pages are always stored."
+        type: boolean
+        default: true
+
+permissions:
+  actions: write    # lets the last job start the next run
+  id-token: write   # lets the job mint the OIDC token scrape-hub uses to verify which repo is calling
+  contents: read
+
+env:
+  SCRAPE_HUB_URL: https://scrape.s1d.me
+
+jobs:
+  crawl:
+    name: Slice ${{ matrix.job_index }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        job_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
+        run: |
+          pip install -r requirements.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Scrape windows
+        if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
+        env:
+          PROCS: ${{ inputs.procs }}
+          STAGGER: ${{ inputs.stagger }}
+          SCRAPE_PROJECT: ${{ inputs.project }}
+          TOTAL_JOBS: ${{ inputs.total_jobs }}
+          JOB: ${{ matrix.job_index }}
+          MAX_ITEMS: ${{ inputs.max_items }}
+          MAX_TENDERS: ${{ inputs.max_tenders }}
+          DOCS: ${{ inputs.documents && '--documents' || '--no-documents' }}
+          RESCRAPE: ${{ inputs.rescrape && '--rescrape' || '' }}
+        run: |
+          # PROCS independent crawler processes per runner, each with its own slice number and its own run on the hub
+          pids=()
+          for p in $(seq 0 $((PROCS - 1))); do
+            python crawl.py --job-index $((JOB * PROCS + p)) --total-jobs $((TOTAL_JOBS * PROCS)) \
+              --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" --stagger "$STAGGER" $DOCS $RESCRAPE &
+            pids+=($!)
+          done
+          fail=0
+          for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+          exit $fail
+
+  continue:
+    name: Start the next run if work remains
+    needs: crawl
+    # runs after the crawl jobs end for any reason except a manual cancel (a cancel means stop for good)
+    if: ${{ always() && !cancelled() && inputs.max_tenders == '0' && inputs.max_items == '0' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Count the windows still waiting
+        id: left
+        run: |
+          pip install -q "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+          echo "n=$(python remaining.py "${{ inputs.project || 'eprocure-tenders' }}")" >> "$GITHUB_OUTPUT"
+      - name: Start the next run
+        if: ${{ steps.left.outputs.n != '0' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "${{ steps.left.outputs.n }} windows still need work: starting the next run"
+          gh workflow run crawl.yml -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" -f stagger="${{ inputs.stagger }}" \
+            -f documents="${{ inputs.documents }}" -f project="${{ inputs.project }}" -f rescrape=false -f max_items=0 -f max_tenders=0

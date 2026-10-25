@@ -1,0 +1,186 @@
+name: GePNIC portals (seed, count, crawl)
+
+# One workflow for every classic GePNIC portal except eprocure.gov.in (crawl.yml does that one). Stages:
+#   seed   register each portal's two hub projects and queue one count task per organisation (per year for big ones): plan.py
+#   count  count every window with one search, split it until it fits, and queue the windows to scrape: count.py
+#   crawl  scrape the windows: crawl.py
+# The allocate job reads what each portal has left on the hub and spreads the runner processes over the portals by that work
+# (assign.py). When a count or crawl run ends with work left, the last job starts the next run of the same stage. Counting never
+# starts the crawl by itself: a crawl run only does anything when started with start_crawl=true. A manual cancel stops the chain.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "seed, count or crawl"
+        default: "count"
+      portals:
+        description: "Comma-separated portals (as in data/gepnic_portals.json), or all"
+        default: "all"
+      total_jobs:
+        description: "Runners (the matrix has 40 slots; 20 is the free plan's limit, 40 Pro's)"
+        default: "20"
+      procs:
+        description: "Processes per runner; each works on one portal"
+        default: "4"
+      per_server:
+        description: "Most processes on one portal server"
+        default: "8"
+      documents:
+        description: "Crawl: also download each tender's documents (on by default; the raw pages are always stored)"
+        type: boolean
+        default: true
+      max_items:
+        description: "Stop each process after this many windows or count tasks (0 = no limit; 2-5 for a smoke test)"
+        default: "0"
+      max_tenders:
+        description: "Crawl: cap tenders per window (0 = no limit)"
+        default: "0"
+      chain:
+        description: "Start the next run of the same stage when this one ends with work left"
+        type: boolean
+        default: true
+      start_crawl:
+        description: "Crawl stage only: really start the big scrape (a crawl run without this does nothing)"
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  id-token: write
+  contents: read
+
+env:
+  SCRAPE_HUB_URL: https://scrape.s1d.me
+
+jobs:
+  seed:
+    name: Seed every portal
+    if: ${{ inputs.stage == 'seed' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests beautifulsoup4 lxml "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - name: Seed
+        run: |
+          fail=0
+          for p in $(python assign.py --list --only "${{ inputs.portals }}"); do
+            echo "::group::$p"
+            PORTAL="$p" python plan.py || { echo "::warning::seeding $p failed"; fail=1; }
+            echo "::endgroup::"
+          done
+          exit $fail
+
+  allocate:
+    name: Spread processes over the portals
+    needs: seed
+    # a portal that fails to seed (down, or refusing us) must not hold up the others: count what was seeded, seed the rest later
+    if: ${{ !cancelled() && (inputs.stage != 'crawl' || inputs.start_crawl) && (inputs.stage != 'seed' || (inputs.chain && (needs.seed.result == 'success' || needs.seed.result == 'failure'))) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      stage: ${{ steps.plan.outputs.stage }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - id: plan
+        run: |
+          stage="${{ inputs.stage }}"; [ "$stage" = seed ] && stage=count
+          plan=$(python assign.py --hub --stage "$stage" --slots $(( ${{ inputs.total_jobs }} * ${{ inputs.procs }} )) --per-server "${{ inputs.per_server }}" --only "${{ inputs.portals }}")
+          echo "$plan" | python -c "import json,sys; d=json.load(sys.stdin); print(len(d['slots']), 'processes'); [print(f'{v:>9}  {k}') for k,v in sorted(d['left'].items(), key=lambda kv:-kv[1])]"
+          echo "plan=$plan" >> "$GITHUB_OUTPUT"
+          echo "stage=$stage" >> "$GITHUB_OUTPUT"
+
+  work:
+    name: Runner ${{ matrix.job }}
+    needs: allocate
+    if: ${{ !cancelled() && needs.allocate.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        job: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ matrix.job < fromJSON(inputs.total_jobs) }}
+      - uses: actions/setup-python@v5
+        if: ${{ matrix.job < fromJSON(inputs.total_jobs) }}
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        if: ${{ matrix.job < fromJSON(inputs.total_jobs) }}
+        run: |
+          pip install -r requirements.txt
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Work
+        if: ${{ matrix.job < fromJSON(inputs.total_jobs) }}
+        env:
+          PLAN: ${{ needs.allocate.outputs.plan }}
+          STAGE: ${{ needs.allocate.outputs.stage }}
+          JOB: ${{ matrix.job }}
+          PROCS: ${{ inputs.procs }}
+          MAX_ITEMS: ${{ inputs.max_items }}
+          MAX_TENDERS: ${{ inputs.max_tenders }}
+          DOCS: ${{ inputs.documents && '--documents' || '--no-documents' }}
+          ONLY: ${{ inputs.portals }}
+        run: |
+          pids=()
+          for p in $(seq 0 $((PROCS - 1))); do
+            slot=$((JOB * PROCS + p))
+            line=$(echo "$PLAN" | python -c "import json,sys; s=json.load(sys.stdin)['slots']; print(' '.join(map(str, s[$slot])) if $slot < len(s) else '')")
+            [ -z "$line" ] && continue
+            set -- $line; portal="$1"; idx="$2"; n="$3"
+            echo "process $p: $STAGE on $portal ($((idx + 1)) of $n)"
+            if [ "$STAGE" = count ]; then
+              # counting is light: when this portal is done, help with the others (biggest first)
+              ( for q in $portal $(python assign.py --list --only "$ONLY" | grep -vx "$portal"); do
+                  PORTAL="$q" python count.py --job-index "$idx" --total-jobs "$n" --max-items "$MAX_ITEMS" --max-hours 5.3 || true
+                done ) > "count-$p.log" 2>&1 &
+            else
+              PORTAL="$portal" python crawl.py --job-index "$idx" --total-jobs "$n" --max-items "$MAX_ITEMS" --max-tenders "$MAX_TENDERS" \
+                --stagger 120 $DOCS > "crawl-$p.log" 2>&1 &
+            fi
+            pids+=($!)
+          done
+          fail=0
+          for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+          tail -n 25 *.log || true
+          exit $fail
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && matrix.job < fromJSON(inputs.total_jobs) }}
+        with:
+          name: logs-${{ matrix.job }}
+          path: "*.log"
+          retention-days: 5
+
+  continue:
+    name: Start the next run if work remains
+    needs: [allocate, work]
+    if: ${{ always() && !cancelled() && inputs.chain && inputs.max_items == '0' && inputs.max_tenders == '0' && needs.allocate.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - name: Next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE: ${{ needs.allocate.outputs.stage }}
+        run: |
+          left=$(python assign.py --hub --stage "$STAGE" --slots 1 --only "${{ inputs.portals }}" | python -c "import json,sys; print(len(json.load(sys.stdin)['left']))")
+          if [ "$left" = 0 ]; then echo "every portal is done with $STAGE"; [ "$STAGE" = count ] && echo "counting finished: start the crawl with stage=crawl start_crawl=true when ready"; exit 0; fi
+          echo "$left portals still have $STAGE work: starting another $STAGE run"
+          gh workflow run gepnic.yml -f stage="$STAGE" -f portals="${{ inputs.portals }}" -f total_jobs="${{ inputs.total_jobs }}" -f procs="${{ inputs.procs }}" \
+            -f per_server="${{ inputs.per_server }}" -f documents="${{ inputs.documents }}" -f max_items=0 -f max_tenders=0 -f chain=true \
+            -f start_crawl="${{ inputs.start_crawl }}"

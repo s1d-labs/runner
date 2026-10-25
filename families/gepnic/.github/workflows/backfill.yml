@@ -1,0 +1,55 @@
+name: Backfill tender document lists
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_jobs:
+        description: "Parallel runners (the matrix has 20 slots; slots >= this value exit immediately)"
+        default: "20"
+      procs:
+        description: "Processes per runner (a runner has 4 cores; parsing is CPU work)"
+        default: "4"
+      threads:
+        description: "Downloads in flight per process"
+        default: "8"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  SCRAPE_HUB_URL: https://scrape.s1d.me
+
+jobs:
+  backfill:
+    name: Slice ${{ matrix.job_index }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 345
+    strategy:
+      fail-fast: false
+      matrix:
+        job_index: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
+        run: pip install requests beautifulsoup4 "scrape-hub-client @ git+https://github.com/Sarthak-Sidhant/scrape-hub@main#subdirectory=client"
+      - name: Parse the saved pages
+        if: ${{ matrix.job_index < fromJSON(inputs.total_jobs) }}
+        env:
+          PROCS: ${{ inputs.procs }}
+          TOTAL_JOBS: ${{ inputs.total_jobs }}
+          THREADS: ${{ inputs.threads }}
+          JOB: ${{ matrix.job_index }}
+        run: |
+          pids=()
+          for p in $(seq 0 $((PROCS - 1))); do
+            python backfill.py --job-index $((JOB * PROCS + p)) --total-jobs $((TOTAL_JOBS * PROCS)) --threads "$THREADS" &
+            pids+=($!)
+          done
+          fail=0
+          for pid in "${pids[@]}"; do wait "$pid" || fail=1; done
+          exit $fail

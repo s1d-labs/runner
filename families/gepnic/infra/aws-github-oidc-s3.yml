@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Lets the eprocure-scrape GitHub Actions workflows upload documents to one S3 prefix using short-lived credentials from
+  GitHub's OIDC token. No access keys are stored anywhere.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: Existing S3 bucket the runners upload to
+  KeyPrefix:
+    Type: String
+    Default: eprocure/
+    Description: The only prefix the role may write under (keep the trailing slash)
+  GitHubRepo:
+    Type: String
+    Default: Sarthak-Sidhant/eprocure-scrape
+    Description: owner/repo allowed to assume the role
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Only workflow runs on this branch may assume the role
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "true"
+    Description: There is one GitHub OIDC provider per AWS account. Set to false if your account already has one.
+  MaxSessionSeconds:
+    Type: Number
+    Default: 21600
+    MinValue: 3600
+    MaxValue: 43200
+    Description: Longest credential lifetime. Runners work up to 5.5 hours, so 6 hours (21600) avoids mid-run expiry.
+
+Conditions:
+  MakeProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+
+  UploadRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: eprocure-scrape-s3-upload
+      MaxSessionDuration: !Ref MaxSessionSeconds
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRoleWithWebIdentity
+            Principal:
+              Federated: !If
+                - MakeProvider
+                - !GetAtt GitHubOidcProvider.Arn
+                - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepo}:ref:refs/heads/${GitHubBranch}"
+      Policies:
+        - PolicyName: upload-to-one-prefix
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteAndCheckObjects
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:AbortMultipartUpload
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${BucketName}/${KeyPrefix}*"
+              - Sid: ListOnlyThePrefix
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${BucketName}"
+                Condition:
+                  StringLike:
+                    s3:prefix: !Sub "${KeyPrefix}*"
+
+Outputs:
+  RoleArn:
+    Description: Put this in the eprocure-scrape repo as the variable AWS_ROLE_ARN (it is not a secret)
+    Value: !GetAtt UploadRole.Arn
