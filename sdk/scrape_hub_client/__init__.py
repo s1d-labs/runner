@@ -16,6 +16,14 @@ Speed is set from the dashboard and comes back on every call as `hub.settings`:
 In a workflow, grant `permissions: id-token: write`; the client then mints a short-lived OIDC token for the
 hub's audience, which is how the hub knows the real repository. Outside Actions, set SCRAPE_HUB_TOKEN (the hub's
 legacy token) and SCRAPE_HUB_REPO.
+
+Pool workers (runner/worker.py in s1d-labs/scrapers) ask the hub what to do next:
+
+    from scrape_hub_client import PoolClient
+    pool = PoolClient()
+    work = pool.assign("gepnic", job_index=0, total_jobs=1, worker="runner-1/1234")
+    if work is None:
+        print(pool.reason)                 # "wait": try again later; "done" (or anything else): stop
 """
 import hashlib
 import random
@@ -26,10 +34,19 @@ from collections import Counter
 
 import requests
 
-__all__ = ["HubClient", "register_project", "seed_queue", "list_queue", "replace_queue"]
+__version__ = "0.3.0"
+__all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue"]
 
 HUB_URL = os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me").rstrip("/")
 AUDIENCE = os.environ.get("SCRAPE_HUB_AUDIENCE", HUB_URL)
+
+
+class HubRejected(RuntimeError):
+    """The hub refused the call (401, 403, 404 or 422): retrying will not help. `status` is the HTTP code."""
+
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
 
 
 DEFAULT_SETTINGS = {"threads": 4, "delay_ms": 0, "paused": False, "auto_backoff": True, "throttled": False, "reason": ""}
@@ -54,7 +71,7 @@ class _Auth:
         # GitHub's token service has brief 503s; retry for ~2 min, and keep using the old token while it is still valid
         for i in range(8):
             try:
-                r = requests.get(url, params={"audience": AUDIENCE}, headers={"Authorization": f"Bearer {bearer}"}, timeout=20)
+                r = requests.get(url, params={"audience": getattr(self, "audience", None) or AUDIENCE}, headers={"Authorization": f"Bearer {bearer}"}, timeout=20)
                 r.raise_for_status()
                 self._tok, self._tok_exp = r.json()["value"], time.time() + 240  # GitHub tokens last ~5 min
                 return self._tok
@@ -80,7 +97,7 @@ class _Auth:
                         self.settings = out["settings"]   # speed knobs set on the dashboard; read via hub.settings
                     return out
                 if r.status_code in (401, 403, 404, 422):
-                    raise RuntimeError(f"hub rejected {path}: {r.status_code} {r.text[:200]}")
+                    raise HubRejected(f"hub rejected {path}: {r.status_code} {r.text[:200]}", r.status_code)
                 last = RuntimeError(f"hub {path}: {r.status_code}")
             except requests.RequestException as e:
                 last = e
@@ -335,3 +352,28 @@ class HubClient(_Auth):
             self.flush()
         finally:
             self.call("POST", f"/api/v1/runs/{self.run_id}/finish", {"state": state, "note": note})
+
+
+class PoolClient(_Auth):
+    """Asks the hub's pool which work this runner process should do next (POST /api/v1/pool/assign).
+
+    The hub picks the family's portal, project and stage; the runner only runs it. `audience` is the OIDC audience to mint
+    tokens for: by default SCRAPE_HUB_AUDIENCE, else the hub URL given here (else SCRAPE_HUB_URL).
+    """
+
+    def __init__(self, hub_url=None, audience=None):
+        super().__init__(hub_url)
+        self.audience = audience or os.environ.get("SCRAPE_HUB_AUDIENCE") or (hub_url.rstrip("/") if hub_url else AUDIENCE)
+        self.reason = ""
+        self.last = {}
+
+    def assign(self, family, job_index=0, total_jobs=1, worker="", retries=4):
+        """The next assignment as a dict ({"family", "portal", "project", "stage", "args", "max_minutes"}), or None when the
+        hub has nothing for this worker; then `self.reason` is the hub's reason ("wait" = ask again later, "done" = stop).
+        Raises HubRejected when the hub refuses this caller, or the last error after `retries` failed attempts."""
+        out = self.call("POST", "/api/v1/pool/assign", {"family": family, "job_index": int(job_index),
+                                                        "total_jobs": int(total_jobs), "worker": str(worker)[:200]}, retries=retries)
+        self.last = out if isinstance(out, dict) else {}
+        work = self.last.get("work")
+        self.reason = "" if work else str(self.last.get("reason") or "")
+        return work or None
