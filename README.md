@@ -81,9 +81,10 @@ repository's `runner.yml`.
 
 ## Adding a family
 
-1. The hub owner adds the family on scrape.s1d.me/runners (name, title, owner).
-2. Create `s1d-labs/<name>` from [s1d-labs/family-template](https://github.com/s1d-labs/family-template) (public): a complete,
-   working example family with `scrape.json`, a scraper, its projects and health checks (`family.py`), and a **setup** workflow.
+1. The hub owner adds the family on scrape.s1d.me/runners (name, title, owner). The hub creates `s1d-labs/<name>` from
+   [s1d-labs/family-template](https://github.com/s1d-labs/family-template) (a working example family with `scrape.json`, a scraper,
+   `family.py`, tests and **setup** / **check** workflows) and makes the owner admin.
+2. Clone it, and check changes with `scrape-check` (or the repo's check workflow).
 3. Change it for your site, then run the setup workflow: from GitHub Actions the family's repo may put its own projects in the pool
    (`set_pool`) and register its health checks (`set_probes`); the hub trusts it through the OIDC token, no secrets needed.
    Your family's data model, records and pages stay in your repo.
