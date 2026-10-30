@@ -33,10 +33,12 @@ import os
 import random
 import re
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -239,17 +241,24 @@ def _setup(src, venv, manifest, log, family):
     log(f"setting up {family} at {src}")
     if venv.exists():
         subprocess.run(["rm", "-rf", str(venv)], check=False)
-    steps = [[sys.executable, "-m", "venv", str(venv)], [str(venv / "bin" / "pip"), "install", "-q", str(ROOT / "sdk")]]
+    sdk = Path(tempfile.mkdtemp(prefix="sdk-")) / "sdk"       # the runner checkout is read-only here; pip builds in the source folder
+    shutil.copytree(ROOT / "sdk", sdk, ignore=shutil.ignore_patterns("*.egg-info", "__pycache__", "build", "tests"))
+    for d in [sdk, *sdk.rglob("*")]:                           # copytree keeps the read-only modes
+        d.chmod(0o755 if d.is_dir() else 0o644)
+    steps = [[sys.executable, "-m", "venv", str(venv)], [str(venv / "bin" / "pip"), "install", "-q", str(sdk)]]
     env = dict(os.environ, VIRTUAL_ENV=str(venv), PATH=f"{venv / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}")
     env.pop("SCRAPE_HUB_TOKEN", None)                # setup commands never need the hub
     for cmd in manifest.get("setup") or []:
         if isinstance(cmd, str):
             steps.append(["bash", "-c", cmd.replace(" --with-deps", "")])
-    for argv in steps:
-        r = subprocess.run(argv, cwd=src, env=env, capture_output=True, text=True, timeout=1800)
-        if r.returncode:
-            log(f"setup of {family} failed at {shlex.join(argv)[:200]}: {(r.stderr or r.stdout).strip()[-400:]}")
-            return False
+    try:
+        for argv in steps:
+            r = subprocess.run(argv, cwd=src, env=env, capture_output=True, text=True, timeout=1800)
+            if r.returncode:
+                log(f"setup of {family} failed at {shlex.join(argv)[:200]}: {(r.stderr or r.stdout).strip()[-400:]}")
+                return False
+    finally:
+        shutil.rmtree(sdk.parent, ignore_errors=True)
     log(f"{family} is set up")
     return True
 

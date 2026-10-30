@@ -47,6 +47,25 @@ def test_server_mode_sets_up_each_commit_once(tmp_path, monkeypatch):
     assert sum("is set up" in m for m in logs) == 2
 
 
+def test_setup_works_with_a_read_only_runner_checkout(tmp_path, monkeypatch):
+    make_family(tmp_path)
+    monkeypatch.setenv("SCRAPE_FAMILY_GIT", str(tmp_path / "origin"))
+    ro = tmp_path / "runner"
+    import shutil
+    shutil.copytree(ROOT / "sdk", ro / "sdk", ignore=shutil.ignore_patterns("*.egg-info", "__pycache__", "build"))
+    monkeypatch.setattr(worker, "ROOT", ro)
+    for d in [ro, *ro.rglob("*")]:
+        if d.is_dir():
+            d.chmod(0o555)
+    try:
+        logs = []
+        assert worker.ensure_family("fam", tmp_path / "families", logs.append), logs
+    finally:
+        for d in [ro, *ro.rglob("*")]:
+            if d.is_dir():
+                d.chmod(0o755)
+
+
 def test_bad_family_names_are_refused(tmp_path):
     logs = []
     assert worker.ensure_family("../etc", tmp_path, logs.append) is None
