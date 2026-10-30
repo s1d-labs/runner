@@ -34,7 +34,7 @@ from collections import Counter
 
 import requests
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue", "set_pool", "set_probes"]
 
 HUB_URL = os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me").rstrip("/")
