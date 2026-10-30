@@ -162,6 +162,8 @@ class TestHub:
                 raise Reject(422, f"env names the runner would drop: {bad} (A-Z 0-9 _, not starting with {', '.join(ENV_RESERVED)})")
             if len(env) > 30 or any(len(str(v)) > 1000 for v in env.values()):
                 raise Reject(422, "env too large")
+            if doc.get("geo") not in (None, "") and not (isinstance(doc["geo"], str) and len(doc["geo"]) == 2 and doc["geo"].isupper()):
+                raise Reject(422, f"geo must be a two-letter country code such as IN, got {doc['geo']!r}")
             old = p["settings"].get("family")
             if old and old != fam:
                 raise Reject(403, "this project belongs to another family")

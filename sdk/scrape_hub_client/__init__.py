@@ -89,7 +89,7 @@ class _Auth:
                 headers = {"Authorization": f"Bearer {self.token()}"}
                 if os.environ.get("SCRAPE_HUB_TOKEN"):
                     headers["X-Scrape-Repo"] = os.environ.get("SCRAPE_HUB_REPO", os.environ.get("GITHUB_REPOSITORY", "unknown/unknown"))
-                    headers["X-Scrape-Run-Id"] = os.environ.get("GITHUB_RUN_ID", "")
+                    headers["X-Scrape-Run-Id"] = os.environ.get("SCRAPE_RUN_ID") or os.environ.get("GITHUB_RUN_ID", "")
                 r = self.s.request(method, self.hub + path, json=body, headers=headers, timeout=30)
                 if r.status_code < 400:
                     out = r.json()
@@ -121,12 +121,14 @@ def seed_queue(project, items, reset_failed=False, hub_url=None, chunk=500):
     return {"added": added, "reset": reset}
 
 
-def set_pool(project, family, task, target="", env=None, probe=None, max_workers=None, pool=True, hub_url=None):
+def set_pool(project, family, task, target="", env=None, probe=None, max_workers=None, pool=True, geo=None, hub_url=None):
     """Put a project in the pool (or take it out with pool=False). Only the family's own repo, s1d-labs/<family>, may do this
     (from GitHub Actions). task: a task name from your scrape.json; target: the host the work hits (the hub caps workers per
-    target); env: what your command needs; probe: the name of one of your health checks (work holds while it fails)."""
+    target); env: what your command needs; probe: the name of one of your health checks (work holds while it fails);
+    geo: a two-letter country code ("IN") when the target only answers from that country: then only the hub's pool servers in
+    that country get the work, never GitHub runners ("" clears it)."""
     body = {"pool": pool, "family": family, "task": task, "target": target, "env": dict(env or {})}
-    body.update({k: v for k, v in (("probe", probe), ("max_workers", max_workers)) if v is not None})
+    body.update({k: v for k, v in (("probe", probe), ("max_workers", max_workers), ("geo", geo)) if v is not None})
     return _Auth(hub_url).call("PUT", f"/api/v1/projects/{project}/pool", body)
 
 

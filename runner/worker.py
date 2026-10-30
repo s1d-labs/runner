@@ -17,8 +17,17 @@ The worker runs that command in the family's checkout with the assignment's env,
     SCRAPE_JOB_INDEX, SCRAPE_TOTAL_JOBS, SCRAPE_MAX_HOURS, SCRAPE_HUB_URL, SCRAPE_POOL_PROJECT, SCRAPE_POOL_TARGET
 then asks again when it exits. On "wait" it sleeps 30-120 s (jittered); on "done" or any other reason it exits 0. It stops at
 --max-hours. Nothing in here knows any family. Only the standard library and the sdk (scrape_hub_client) are used.
+
+Server mode (a machine the hub owner runs, e.g. in India; token from the hub's /runners page in SCRAPE_HUB_TOKEN):
+
+    python -m runner.worker --server --families-dir /var/lib/scrape-worker/families --job-index 0 --total-jobs 4
+
+asks without a family; the hub answers with work from any family whose project has a "geo" matching the server's region. The
+worker keeps a checkout of each family it gets work for (s1d-labs/<family> at main, fetched again after FETCH_EVERY_S) with
+its own venv: the sdk from this checkout, then scrape.json's setup commands, re-run whenever the family's commit changes.
 """
 import argparse
+import fcntl
 import json
 import os
 import random
@@ -45,6 +54,8 @@ GRACE_MINUTES = 10           # a child that overruns its own --max-hours by this
 WAIT_MIN, WAIT_MAX = 30, 120  # back-off when the hub says "wait"
 
 STOP = threading.Event()
+FETCH_EVERY_S = 300           # server mode: how often a family's checkout is brought up to date
+ORG = "s1d-labs"
 
 
 class Ctx:
@@ -142,7 +153,7 @@ def load_manifest(family_dir):
     return m
 
 
-def run_task(work, ctx, manifest):
+def run_task(work, ctx, manifest, family_dir=None, python=None):
     """Run the family's command for this assignment's task; returns its exit code (2 when the assignment can't be run)."""
     task = work.get("task") or work.get("stage") or ""
     cmd = (manifest.get("tasks") or {}).get(task)
@@ -160,8 +171,87 @@ def run_task(work, ctx, manifest):
     env.update({"SCRAPE_JOB_INDEX": str(int(job_index)), "SCRAPE_TOTAL_JOBS": str(int(total_jobs)), "SCRAPE_MAX_HOURS": f"{minutes / 60:.3f}",
                 "SCRAPE_HUB_URL": ctx.hub, "SCRAPE_POOL_PROJECT": str(work.get("project") or ""), "SCRAPE_POOL_TARGET": str(work.get("target") or "")})
     ctx.log(f"{task} for {work.get('project') or '?'} on {work.get('target') or '?'}, slice {job_index} of {total_jobs}")
-    argv = [sys.executable if cmd[0] == "python" else cmd[0], *cmd[1:], *extra]
-    return ctx.run(argv, ctx.family_dir, env, minutes)
+    argv = [(python or sys.executable) if cmd[0] == "python" else cmd[0], *cmd[1:], *extra]
+    return ctx.run(argv, family_dir or ctx.family_dir, env, minutes)
+
+
+# -- server mode: a checkout + venv per family ------------------------------------------------------------------------------
+
+FAMILY_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
+
+
+def _git(args, cwd=None):
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=600)
+
+
+def ensure_family(family, families_dir, log):
+    """Server mode: the family's checkout (up to date within FETCH_EVERY_S) and its venv, set up for its current commit.
+    Returns (checkout dir, manifest, venv python), or None when it can't be made ready (the worker then waits and asks again)."""
+    if not FAMILY_NAME.match(family or ""):
+        log(f"bad family name {family!r} from the hub")
+        return None
+    base = Path(families_dir) / family
+    base.mkdir(parents=True, exist_ok=True)
+    src, venv = base / "src", base / "venv"
+    with open(base / ".lock", "w") as lock:          # the server's other worker processes share these folders
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        stamp = base / ".fetched"
+        if not (src / ".git").exists():
+            r = _git(["clone", "--depth", "1", f"{os.environ.get('SCRAPE_FAMILY_GIT', 'https://github.com/' + ORG)}/{family}", str(src)])
+            if r.returncode:
+                log(f"could not clone {ORG}/{family}: {r.stderr.strip()[-300:]}")
+                return None
+            stamp.write_text(str(time.time()))
+        elif time.time() - float(stamp.read_text() or 0 if stamp.exists() else 0) > FETCH_EVERY_S:
+            r = _git(["fetch", "--depth", "1", "origin", "main"], src)
+            if r.returncode == 0:
+                _git(["reset", "--hard", "-q", "FETCH_HEAD"], src)
+            else:
+                log(f"could not update {ORG}/{family} (using the checkout we have): {r.stderr.strip()[-200:]}")
+            stamp.write_text(str(time.time()))
+        head = _git(["rev-parse", "HEAD"], src).stdout.strip()
+        try:
+            manifest = load_manifest(src)
+        except (OSError, ValueError) as e:
+            log(f"{ORG}/{family} has no usable scrape.json: {e}")
+            return None
+        python = venv / "bin" / "python"
+        want = f"{head} {_sdk_version()}"
+        done = base / ".setup-done"
+        if not python.exists() or not done.exists() or done.read_text().strip() != want:
+            if not _setup(src, venv, manifest, log, family):
+                return None
+            done.write_text(want)
+        return src, manifest, str(python)
+
+
+def _sdk_version():
+    try:
+        m = re.search(r'^version = "([^"]+)"', (ROOT / "sdk" / "pyproject.toml").read_text(), re.M)
+        return m.group(1) if m else "?"
+    except OSError:
+        return "?"
+
+
+def _setup(src, venv, manifest, log, family):
+    """A fresh venv for the family's commit: the sdk from this checkout, then the family's setup commands (scrape.json "setup")
+    with the venv first on PATH. Playwright's --with-deps is dropped: it needs root, and the server has those libraries already."""
+    log(f"setting up {family} at {src}")
+    if venv.exists():
+        subprocess.run(["rm", "-rf", str(venv)], check=False)
+    steps = [[sys.executable, "-m", "venv", str(venv)], [str(venv / "bin" / "pip"), "install", "-q", str(ROOT / "sdk")]]
+    env = dict(os.environ, VIRTUAL_ENV=str(venv), PATH=f"{venv / 'bin'}:{os.environ.get('PATH', '/usr/bin:/bin')}")
+    env.pop("SCRAPE_HUB_TOKEN", None)                # setup commands never need the hub
+    for cmd in manifest.get("setup") or []:
+        if isinstance(cmd, str):
+            steps.append(["bash", "-c", cmd.replace(" --with-deps", "")])
+    for argv in steps:
+        r = subprocess.run(argv, cwd=src, env=env, capture_output=True, text=True, timeout=1800)
+        if r.returncode:
+            log(f"setup of {family} failed at {shlex.join(argv)[:200]}: {(r.stderr or r.stdout).strip()[-400:]}")
+            return False
+    log(f"{family} is set up")
+    return True
 
 
 def _minutes(work, ctx):
@@ -196,7 +286,9 @@ def _sleep(seconds, ctx):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m runner.worker", description="scrape-hub pool worker")
-    ap.add_argument("--family", required=True, help="scraper family (its code is the repo s1d-labs/<family>)")
+    ap.add_argument("--family", default="", help="scraper family (its code is the repo s1d-labs/<family>); not used with --server")
+    ap.add_argument("--server", action="store_true", help="pool server mode: any family's work for this server's region (see above)")
+    ap.add_argument("--families-dir", default="/var/lib/scrape-worker/families", help="server mode: where family checkouts live")
     ap.add_argument("--family-dir", default="family", help="checkout of the family's repo (holds scrape.json)")
     ap.add_argument("--job-index", type=int, default=0, help="this worker's slot, 0-based")
     ap.add_argument("--total-jobs", type=int, default=1, help="how many workers run in this pool run")
@@ -214,6 +306,11 @@ def main(argv=None):
 
     ctx = Ctx(args, log)
     ctx.family_dir = Path(args.family_dir).resolve()
+    if args.server:
+        return server_loop(args, ctx, log)
+    if not args.family:
+        log("--family is required (or --server)")
+        return 2
     try:
         manifest = load_manifest(ctx.family_dir)
     except (OSError, ValueError) as e:
@@ -281,6 +378,61 @@ def main(argv=None):
         if args.dry_run and not args.hub_fake:
             log("dry run: stopping after one assignment")
             return 0
+    log("stopped")
+    return 0
+
+
+def server_loop(args, ctx, log):
+    """--server: ask for any family's work, make that family ready, run it; never stops for "done" (the hub says "wait")."""
+    if not os.environ.get("SCRAPE_HUB_TOKEN"):
+        log("server mode needs SCRAPE_HUB_TOKEN (the server's token from the hub's /runners page)")
+        return 2
+    os.environ.setdefault("SCRAPE_RUN_ID", f"{socket.gethostname()}-{int(time.time())}")
+    worker = args.worker or f"{socket.gethostname()}/{args.job_index}"
+
+    def on_signal(signum, _frame):
+        log(f"got signal {signum}: finishing")
+        STOP.set()
+        if ctx.child is not None:
+            threading.Thread(target=ctx._stop_child, args=(ctx.child, "worker is stopping"), daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    pool = PoolClient(ctx.hub)
+    log(f"server mode, hub {ctx.hub}, worker {worker}, run {os.environ['SCRAPE_RUN_ID']}, until {args.max_hours} h")
+    errors = failures = done = 0
+    while not STOP.is_set():
+        if ctx.minutes_left() < MIN_LEFT_MINUTES:
+            log(f"deadline reached after {done} assignments")
+            return 0
+        try:
+            work = pool.assign("", job_index=args.job_index, total_jobs=args.total_jobs, worker=worker)
+            errors = 0
+        except HubRejected as e:
+            log(f"the hub refused this server: {e}. Is its token current (hub /runners → Pool servers)?")
+            _sleep(300, ctx)                         # systemd would restart us at once; ask again in a while instead
+            continue
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            wait = min(300, 15 * 2 ** min(errors, 5)) * random.uniform(0.5, 1.5)
+            log(f"hub error ({type(e).__name__}: {str(e)[:200]}); retrying in {wait:.0f} s")
+            _sleep(wait, ctx)
+            continue
+        if work is None:
+            wait = random.uniform(WAIT_MIN, WAIT_MAX)
+            log(f"no work ({pool.reason or 'wait'}: {pool.last.get('detail', '')}); asking again in {wait:.0f} s")
+            _sleep(wait, ctx)
+            continue
+        ready = ensure_family(work.get("family") or "", args.families_dir, log)
+        rc = run_task(work, ctx, ready[1], ready[0], ready[2]) if ready else 2
+        done += 1
+        if rc == 0:
+            failures = 0
+        elif not STOP.is_set():
+            failures += 1
+            wait = min(300, 30 * failures) * random.uniform(0.75, 1.25)
+            log(f"assignment ended with exit {rc}; next one in {wait:.0f} s")
+            _sleep(wait, ctx)
     log("stopped")
     return 0
 
