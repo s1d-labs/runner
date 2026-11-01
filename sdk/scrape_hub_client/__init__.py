@@ -34,7 +34,7 @@ from collections import Counter
 
 import requests
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 __all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue", "set_pool", "set_probes"]
 
 HUB_URL = os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me").rstrip("/")
@@ -121,16 +121,20 @@ def seed_queue(project, items, reset_failed=False, hub_url=None, chunk=500):
     return {"added": added, "reset": reset}
 
 
-def set_pool(project, family, task, target="", env=None, probe=None, max_workers=None, pool=True, geo=None, proxy=None, hub_url=None):
+def set_pool(project, family, task, target="", env=None, probe=None, max_workers=None, pool=True, geo=None, proxy=None, threads=None,
+             delay_ms=None, hub_url=None):
     """Put a project in the pool (or take it out with pool=False). Only the family's own repo, s1d-labs/<family>, may do this
     (from GitHub Actions). task: a task name from your scrape.json; target: the host the work hits (the hub caps workers per
     target); env: what your command needs; probe: the name of one of your health checks (work holds while it fails);
     geo: a two-letter country code ("IN") when the target only answers from that country: then only the hub's pool servers in
     that country get the work, never GitHub runners ("" clears it); proxy: a two-letter country code ("IN") to run the work on
     GitHub runners through one of the hub's proxies in that country, one proxy per worker; the task gets it as HTTPS_PROXY /
-    HTTP_PROXY / SCRAPE_PROXY ("" clears it). geo and proxy together: both the India servers and proxied GitHub workers take it."""
+    HTTP_PROXY / SCRAPE_PROXY ("" clears it). geo and proxy together: both the India servers and proxied GitHub workers take it.
+    threads (1-32) / delay_ms (0-5000): the speed each worker process gets in hub.settings; the hub's throttles may lower it while the
+    site pushes back, and the family owner can change it on the dashboard (running Setup again sets it back to what's here)."""
     body = {"pool": pool, "family": family, "task": task, "target": target, "env": dict(env or {})}
-    body.update({k: v for k, v in (("probe", probe), ("max_workers", max_workers), ("geo", geo), ("proxy", proxy)) if v is not None})
+    body.update({k: v for k, v in (("probe", probe), ("max_workers", max_workers), ("geo", geo), ("proxy", proxy), ("threads", threads),
+                                   ("delay_ms", delay_ms)) if v is not None})
     return _Auth(hub_url).call("PUT", f"/api/v1/projects/{project}/pool", body)
 
 

@@ -162,6 +162,10 @@ class TestHub:
                 raise Reject(422, f"env names the runner would drop: {bad} (A-Z 0-9 _, not starting with {', '.join(ENV_RESERVED)})")
             if len(env) > 30 or any(len(str(v)) > 1000 for v in env.values()):
                 raise Reject(422, "env too large")
+            if doc.get("threads") is not None and not (isinstance(doc["threads"], int) and 1 <= doc["threads"] <= 32):
+                raise Reject(422, f"threads must be 1-32, got {doc['threads']!r}")
+            if doc.get("delay_ms") is not None and not (isinstance(doc["delay_ms"], int) and 0 <= doc["delay_ms"] <= 5000):
+                raise Reject(422, f"delay_ms must be 0-5000, got {doc['delay_ms']!r}")
             for k in ("geo", "proxy"):
                 if doc.get(k) not in (None, "") and not (isinstance(doc[k], str) and len(doc[k]) == 2 and doc[k].isupper()):
                     raise Reject(422, f"{k} must be a two-letter country code such as IN, got {doc[k]!r}")
