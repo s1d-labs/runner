@@ -70,3 +70,15 @@ def test_bad_family_names_are_refused(tmp_path):
     logs = []
     assert worker.ensure_family("../etc", tmp_path, logs.append) is None
     assert "bad family name" in logs[0]
+
+
+def test_proxy_env_reaches_the_task_and_skips_the_hub(monkeypatch, capsys):
+    class C:
+        hub = "https://scrape.s1d.me"
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    env = worker.proxy_env({"url": "http://user:pw%2F1@95.1.1.1:50100", "label": "in-03", "exit": "95.1.1.1"}, C())
+    assert env["HTTPS_PROXY"] == env["SCRAPE_PROXY"] == "http://user:pw%2F1@95.1.1.1:50100" and env["SCRAPE_PROXY_LABEL"] == "in-03"
+    assert "scrape.s1d.me" in env["NO_PROXY"].split(",")
+    out = capsys.readouterr().out
+    assert "::add-mask::http://user:pw%2F1@95.1.1.1:50100" in out and "::add-mask::pw%2F1" in out
+    assert worker.proxy_env(None, C()) == {} and worker.proxy_env({"url": "junk"}, C()) == {}

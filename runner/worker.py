@@ -78,7 +78,7 @@ class Ctx:
     def run(self, cmd, cwd, env_extra, minutes):
         """Run cmd in cwd with os.environ + env_extra, stream its output, stop it GRACE_MINUTES after `minutes`.
         Returns its exit code (0 in a dry run)."""
-        shown = " ".join(f"{k}={shlex.quote(v)}" for k, v in env_extra.items())
+        shown = " ".join(f"{k}={'<proxy>' if 'PROXY' in k.upper() and k.upper() not in ('NO_PROXY',) else shlex.quote(v)}" for k, v in env_extra.items())
         rel = os.path.relpath(cwd)
         self.log(f"{'would run' if self.dry_run else 'run'}: (cd {rel} && {shown} {shlex.join(cmd)})  [limit {minutes:.0f} min]")
         if self.dry_run:
@@ -172,7 +172,9 @@ def run_task(work, ctx, manifest, family_dir=None, python=None):
     total_jobs = work.get("total_jobs", ctx.total_jobs)
     env.update({"SCRAPE_JOB_INDEX": str(int(job_index)), "SCRAPE_TOTAL_JOBS": str(int(total_jobs)), "SCRAPE_MAX_HOURS": f"{minutes / 60:.3f}",
                 "SCRAPE_HUB_URL": ctx.hub, "SCRAPE_POOL_PROJECT": str(work.get("project") or ""), "SCRAPE_POOL_TARGET": str(work.get("target") or "")})
-    ctx.log(f"{task} for {work.get('project') or '?'} on {work.get('target') or '?'}, slice {job_index} of {total_jobs}")
+    env.update(proxy_env(work.get("proxy"), ctx))
+    ctx.log(f"{task} for {work.get('project') or '?'} on {work.get('target') or '?'}, slice {job_index} of {total_jobs}"
+            + (f", through proxy {work['proxy'].get('label')} ({work['proxy'].get('exit')})" if isinstance(work.get("proxy"), dict) else ""))
     argv = [(python or sys.executable) if cmd[0] == "python" else cmd[0], *cmd[1:], *extra]
     return ctx.run(argv, family_dir or ctx.family_dir, env, minutes)
 
@@ -261,6 +263,25 @@ def _setup(src, venv, manifest, log, family):
         shutil.rmtree(sdk.parent, ignore_errors=True)
     log(f"{family} is set up")
     return True
+
+
+def proxy_env(proxy, ctx):
+    """The hub lent this assignment a proxy (project with proxy="IN"): hand it to the task through the standard variables, which
+    requests / httpx / curl / pip use by themselves, plus SCRAPE_PROXY for code that sets a proxy explicitly (Playwright). Calls to
+    the hub and to GitHub go direct. The URL holds a password, so GitHub is told to mask it in the log."""
+    if not isinstance(proxy, dict) or not isinstance(proxy.get("url"), str) or "://" not in proxy["url"]:
+        return {}
+    url = proxy["url"]
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::add-mask::{url}", flush=True)
+        creds = url.split("://", 1)[1].rsplit("@", 1)[0]
+        if ":" in creds:
+            print(f"::add-mask::{creds.split(':', 1)[1]}", flush=True)
+    hub_host = re.sub(r"^https?://", "", ctx.hub).split("/")[0].split(":")[0]
+    no_proxy = ",".join([hub_host, "localhost", "127.0.0.1", ".actions.githubusercontent.com", "github.com", ".github.com"])
+    return {"HTTPS_PROXY": url, "HTTP_PROXY": url, "https_proxy": url, "http_proxy": url, "SCRAPE_PROXY": url,
+            "SCRAPE_PROXY_LABEL": str(proxy.get("label") or ""), "SCRAPE_PROXY_EXIT": str(proxy.get("exit") or ""),
+            "NO_PROXY": no_proxy, "no_proxy": no_proxy}
 
 
 def _minutes(work, ctx):
