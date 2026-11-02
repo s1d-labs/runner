@@ -34,7 +34,7 @@ from collections import Counter
 
 import requests
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 __all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue", "set_pool", "set_probes"]
 
 HUB_URL = os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me").rstrip("/")
@@ -122,7 +122,7 @@ def seed_queue(project, items, reset_failed=False, hub_url=None, chunk=500):
 
 
 def set_pool(project, family, task, target="", env=None, probe=None, max_workers=None, pool=True, geo=None, proxy=None, threads=None,
-             delay_ms=None, hub_url=None):
+             delay_ms=None, proxy_only=None, hub_url=None):
     """Put a project in the pool (or take it out with pool=False). Only the family's own repo, s1d-labs/<family>, may do this
     (from GitHub Actions). task: a task name from your scrape.json; target: the host the work hits (the hub caps workers per
     target); env: what your command needs; probe: the name of one of your health checks (work holds while it fails);
@@ -131,16 +131,20 @@ def set_pool(project, family, task, target="", env=None, probe=None, max_workers
     GitHub runners through one of the hub's proxies in that country, one proxy per worker; the task gets it as HTTPS_PROXY /
     HTTP_PROXY / SCRAPE_PROXY ("" clears it). geo and proxy together: both the India servers and proxied GitHub workers take it.
     threads (1-32) / delay_ms (0-5000): the speed each worker process gets in hub.settings; the hub's throttles may lower it while the
-    site pushes back, and the family owner can change it on the dashboard (running Setup again sets it back to what's here)."""
+    site pushes back, and the family owner can change it on the dashboard (running Setup again sets it back to what's here).
+    proxy_only: lend this project only these proxies: labels ("in-06") or IP prefixes ("91.124.42.") - for a site that refuses some of
+    the hub's IP ranges; [] = any. Its health check then also goes through those proxies."""
     body = {"pool": pool, "family": family, "task": task, "target": target, "env": dict(env or {})}
     body.update({k: v for k, v in (("probe", probe), ("max_workers", max_workers), ("geo", geo), ("proxy", proxy), ("threads", threads),
-                                   ("delay_ms", delay_ms)) if v is not None})
+                                   ("delay_ms", delay_ms), ("proxy_only", list(proxy_only) if proxy_only is not None else None)) if v is not None})
     return _Auth(hub_url).call("PUT", f"/api/v1/projects/{project}/pool", body)
 
 
 def set_probes(family, targets, hub_url=None):
     """Replace the family's health checks: targets = [{"name": "myfamily:site", "url": "https://...", "expect": "text on the page"}].
-    The hub checks each once a minute (up = HTTP 200 within 20 s and, if given, `expect` in the page). Family repo only."""
+    The hub checks each once a minute (up = HTTP 200 within 20 s and, if given, `expect` in the page). Family repo only.
+    India-only sites: add "proxy": "IN" (the hub checks through one of its Indian proxies, a second one if the first fails); checks used
+    by a project with proxy / geo "IN" go through a proxy anyway."""
     return _Auth(hub_url).call("PUT", f"/api/v1/families/{family}/probes", {"targets": list(targets)})
 
 

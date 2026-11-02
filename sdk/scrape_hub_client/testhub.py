@@ -166,6 +166,9 @@ class TestHub:
                 raise Reject(422, f"threads must be 1-32, got {doc['threads']!r}")
             if doc.get("delay_ms") is not None and not (isinstance(doc["delay_ms"], int) and 0 <= doc["delay_ms"] <= 5000):
                 raise Reject(422, f"delay_ms must be 0-5000, got {doc['delay_ms']!r}")
+            po = doc.get("proxy_only")
+            if po is not None and not (isinstance(po, list) and len(po) <= 20 and all(isinstance(x, str) and x for x in po)):
+                raise Reject(422, "proxy_only must be a list of proxy labels or IP prefixes")
             for k in ("geo", "proxy"):
                 if doc.get(k) not in (None, "") and not (isinstance(doc[k], str) and len(doc[k]) == 2 and doc[k].isupper()):
                     raise Reject(422, f"{k} must be a two-letter country code such as IN, got {doc[k]!r}")
