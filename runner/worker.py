@@ -78,7 +78,15 @@ class Ctx:
     def run(self, cmd, cwd, env_extra, minutes):
         """Run cmd in cwd with os.environ + env_extra, stream its output, stop it GRACE_MINUTES after `minutes`.
         Returns its exit code (0 in a dry run)."""
-        shown = " ".join(f"{k}={'<proxy>' if 'PROXY' in k.upper() and k.upper() not in ('NO_PROXY',) else shlex.quote(v)}" for k, v in env_extra.items())
+        def _show(k, v):
+            ku = k.upper()
+            if "PROXY" in ku and ku != "NO_PROXY":
+                return "<proxy>"
+            if any(s in ku for s in ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "_KEY", "APIKEY")):
+                print(f"::add-mask::{v}", flush=True)   # keep a family's secret env out of the public Actions log
+                return "<secret>"
+            return shlex.quote(v)
+        shown = " ".join(f"{k}={_show(k, v)}" for k, v in env_extra.items())
         rel = os.path.relpath(cwd)
         self.log(f"{'would run' if self.dry_run else 'run'}: (cd {rel} && {shown} {shlex.join(cmd)})  [limit {minutes:.0f} min]")
         if self.dry_run:
