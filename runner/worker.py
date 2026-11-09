@@ -324,7 +324,8 @@ def _sleep(seconds, ctx):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m runner.worker", description="scrape-hub pool worker")
-    ap.add_argument("--family", default="", help="scraper family (its code is the repo s1d-labs/<family>); not used with --server")
+    ap.add_argument("--family", default="", help="scraper family (its code is the repo s1d-labs/<family>); with --server: only this "
+                    "family's work for the server's region (default: any family, most waiting work first)")
     ap.add_argument("--server", action="store_true", help="pool server mode: any family's work for this server's region (see above)")
     ap.add_argument("--families-dir", default="/var/lib/scrape-worker/families", help="server mode: where family checkouts live")
     ap.add_argument("--family-dir", default="family", help="checkout of the family's repo (holds scrape.json)")
@@ -444,7 +445,7 @@ def server_loop(args, ctx, log):
             log(f"deadline reached after {done} assignments")
             return 0
         try:
-            work = pool.assign("", job_index=args.job_index, total_jobs=args.total_jobs, worker=worker)
+            work = pool.assign(args.family, job_index=args.job_index, total_jobs=args.total_jobs, worker=worker)   # "" = any family
             errors = 0
         except HubRejected as e:
             log(f"the hub refused this server: {e}. Is its token current (hub /runners → Pool servers)?")
