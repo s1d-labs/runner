@@ -286,7 +286,10 @@ def proxy_env(proxy, ctx):
         if ":" in creds:
             print(f"::add-mask::{creds.split(':', 1)[1]}", flush=True)
     hub_host = re.sub(r"^https?://", "", ctx.hub).split("/")[0].split(":")[0]
-    no_proxy = ",".join([hub_host, "localhost", "127.0.0.1", ".actions.githubusercontent.com", "github.com", ".github.com"])
+    # Storage goes direct: B2/R2 are not geo-blocked, and uploads through the Mumbai proxy failed (ProxyError to
+    # s3.us-east-005.backblazeb2.com, 2026-11-09) and slowed every proxy worker.
+    no_proxy = ",".join([hub_host, "localhost", "127.0.0.1", ".actions.githubusercontent.com", "github.com", ".github.com",
+                         ".backblazeb2.com", ".r2.cloudflarestorage.com", "archive.s1d.me"])
     return {"HTTPS_PROXY": url, "HTTP_PROXY": url, "https_proxy": url, "http_proxy": url, "SCRAPE_PROXY": url,
             "SCRAPE_PROXY_LABEL": str(proxy.get("label") or ""), "SCRAPE_PROXY_EXIT": str(proxy.get("exit") or ""),
             "NO_PROXY": no_proxy, "no_proxy": no_proxy}
