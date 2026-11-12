@@ -90,10 +90,20 @@ def run_setup(d, hub, family, rep, out):
         return False
     st = hub.state
     entries = {n: p["settings"] for n, p in st["projects"].items() if p["settings"].get("pool")}
-    rep.ok(bool(entries), "pool entries", f"{len(entries)} project(s): {', '.join(list(entries)[:5])}", "setup put no project in the pool (set_pool)")
+    paused = paused_entries(hub)
+    if not entries and paused:            # set_pool(..., pool=False) for every project: the family is paused on purpose
+        rep.add("WARN", "pool entries", f"all {len(paused)} project(s) have pool=False (the family is paused): {', '.join(paused[:5])}; "
+                "no task is run (give --project NAME to run one anyway)")
+    else:
+        rep.ok(bool(entries), "pool entries", f"{len(entries)} project(s): {', '.join(list(entries)[:5])}", "setup put no project in the pool (set_pool)")
     probes = {t["name"] for t in st["probes"].get(family, [])}
     rep.ok(bool(probes), "health checks", f"{len(probes)} registered", "none registered (set_probes): work can't be held when the site is down", warn=True)
     return True
+
+
+def paused_entries(hub):
+    """Projects whose pool entry setup wrote with pool=False."""
+    return [n for n, p in hub.state["projects"].items() if p["settings"].get("task") and p["settings"].get("pool") is False]
 
 
 def check_entries(m, hub, family, rep):
@@ -245,6 +255,8 @@ def main(argv=None):
             hub.handle("POST", f"/api/v1/projects/{a.project}/queue", {"items": [json.loads(x) for x in a.item]})
         check_entries(m, hub, family, rep)
         pooled = [n for n, p in hub.state["projects"].items() if p["settings"].get("pool")]
+        if not pooled and not a.project and paused_entries(hub):
+            return finish(rep, out, a)        # a paused family: the WARN above says so; nothing to run
         project = a.project or (pooled[0] if pooled else None)
         if not project or project not in hub.state["projects"]:
             rep.add("FAIL", "project to test", f"{project!r} has no pool entry")

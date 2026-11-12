@@ -68,6 +68,23 @@ queue is empty, calls accepted, stable record ids on the rerun. Exit code 1 if a
 Families without `setup_family.py`: `scrape-check --project P --task T --env K=V --item '{"key": ..., "payload": {...}}'`.
 The checker's own tests: `python -m pytest sdk/tests`.
 
+## Helpers for task scripts (0.10.0)
+
+Code that many families copied is now in the client (all from `scrape_hub_client`; details in [sdk/CHANGELOG.md](sdk/CHANGELOG.md)):
+
+```python
+from scrape_hub_client import HubClient, LocalHub, ca_bundle, stop_flag, timed_get
+
+stop = stop_flag()                         # threading.Event, set on SIGINT / SIGTERM (the runner's "time is up")
+s = requests.Session()
+s.verify = ca_bundle()                     # certifi + public intermediates some sites do not send; verification stays on
+r = timed_get(hub, s, url, timeout=30)     # counts n_http, t_http_s, http_<code>, http_error; 403/429/503 -> hub.block()
+hub = LocalHub()                           # for `--local`: counters in hub.counts, records to stdout
+```
+
+`timed_request(hub, session, method, url, ...)` and `timed_post` take any method; `count_request(hub, status, seconds)` reports a
+request made with another client. A certificate that more families need goes in `sdk/scrape_hub_client/certs/` (one per file).
+
 ## Joining the pool (members)
 
 1. On [s1d-labs/scrape-runner](https://github.com/s1d-labs/scrape-runner), click **Use this template** and create

@@ -24,6 +24,10 @@ Pool workers (runner/worker.py in s1d-labs/runner) ask the hub what to do next:
     work = pool.assign("myfamily", job_index=0, total_jobs=1, worker="runner-1/1234")
     if work is None:
         print(pool.reason)                 # "wait": try again later; "done" (or anything else): stop
+
+Helpers for task scripts (0.10.0): `stop_flag()` (an Event set on SIGINT/SIGTERM), `timed_get(hub, session, url)` /
+`timed_request` / `count_request` (the request metrics n_http, t_http_s, http_<code>, http_error), `LocalHub` (a stand-in for
+HubClient in a task's --local mode) and `ca_bundle()` (certifi + public intermediate certificates that some sites do not send).
 """
 import hashlib
 import random
@@ -34,8 +38,9 @@ from collections import Counter
 
 import requests
 
-__version__ = "0.9.0"
-__all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue", "set_pool", "set_probes"]
+__version__ = "0.10.0"
+__all__ = ["HubClient", "PoolClient", "HubRejected", "register_project", "seed_queue", "list_queue", "replace_queue", "set_pool", "set_probes",
+           "LocalHub", "stop_flag", "timed_request", "timed_get", "timed_post", "count_request", "ca_bundle"]
 
 HUB_URL = os.environ.get("SCRAPE_HUB_URL", "https://scrape.s1d.me").rstrip("/")
 AUDIENCE = os.environ.get("SCRAPE_HUB_AUDIENCE", HUB_URL)
@@ -409,3 +414,7 @@ class PoolClient(_Auth):
         work = self.last.get("work")
         self.reason = "" if work else str(self.last.get("reason") or "")
         return work or None
+
+
+from .helpers import LocalHub, count_request, stop_flag, timed_get, timed_post, timed_request  # noqa: E402
+from .tls import ca_bundle  # noqa: E402

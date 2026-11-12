@@ -97,18 +97,18 @@ jobs:
       matrix:
         job: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           repository: s1d-labs/runner
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: actions/checkout@v4      # the family's own code: always a repo of the s1d-labs org
+      - uses: actions/checkout@v6      # the family's own code: always a repo of the s1d-labs org
         with:
           repository: s1d-labs/${{ needs.plan.outputs.family }}
           ref: main
           path: family
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install
