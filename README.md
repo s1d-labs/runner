@@ -12,7 +12,7 @@ each family's storage and tracks runners, IPs, requests and hosts. Runners prove
 
 | Path | What |
 |---|---|
-| `sdk/` | `scrape-hub-client` (module `scrape_hub_client`): `HubClient`, `register_project`, `seed_queue`, ..., and `PoolClient` for pool assignments. `pip install ./sdk`, or from anywhere: `pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@main#subdirectory=sdk"` |
+| `sdk/` | `scrape-hub-client` (module `scrape_hub_client`): `HubClient`, `register_project`, `seed_queue`, ..., and `PoolClient` for pool assignments. `pip install ./sdk`, or from anywhere: `pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk"` (releases and tags: [sdk/CHANGELOG.md](sdk/CHANGELOG.md)) |
 | `runner/` | The pool worker, `python -m runner.worker` (standard library + the sdk) |
 | `.github/workflows/runner.yml` | Reusable workflow: `jobs` runners x `procs` workers, each running the family's code from `s1d-labs/<family>` |
 
@@ -57,7 +57,7 @@ python -m runner.worker --family gepnic --family-dir ../gepnic --dry-run --hub-f
 The client ships a local stand-in for the hub (`scrape_hub_client.testhub`) and a checker that uses it:
 
 ```sh
-pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@main#subdirectory=sdk"
+pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk"
 cd my-family-repo && scrape-check            # or: python -m scrape_hub_client.check
 ```
 
@@ -110,3 +110,9 @@ repository's `runner.yml`.
 
 The hub passes `ref` (a branch, tag or commit of this repository) when it starts a run. Members' workflow files point at
 `runner.yml@main` and never change; tags let the hub pin a known-good version. Family repos run at `main`.
+
+The client has its own tags: `sdk-vX.Y.Z` (one version, never moved) and `sdk-stable` (moved forward after a version ran well
+for some days). Family repos install the client from `@sdk-stable`. The release steps are in [sdk/CHANGELOG.md](sdk/CHANGELOG.md).
+Pool jobs first install `./sdk` from the runner ref, then the family's setup. When the family pins `@sdk-stable` and that version
+differs from `./sdk`, pip replaces `./sdk` with the `sdk-stable` copy, and the worker (`runner/worker.py`) also uses that copy.
+So the worker at the runner ref must work with the `sdk-stable` client. When the versions are the same, pip keeps `./sdk`.
