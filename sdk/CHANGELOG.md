@@ -1,8 +1,9 @@
 # scrape-hub-client changelog
 
 Families install the client from the tag `sdk-stable`:
-`scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk` (in `requirements.txt`, `check.yml` and
-`setup.yml`). Changes are additive: a new version does not rename or remove names that families use.
+`scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk` (in their workflows, for example
+`check.yml` and `setup.yml`). A family's `requirements.txt` does not list the client: pool jobs install `./sdk` of the runner ref.
+Changes are additive: a new version does not rename or remove names that families use.
 
 ## Tags and releases
 
@@ -35,8 +36,9 @@ To release a version:
    Families get the new version at their next install. pip keeps an installed copy of the same version, so a version that
    changes code needs a new version number.
 
-In a pool job, the family's pin wins over `./sdk` of the runner ref when the versions differ, and `runner/worker.py` then runs
-with the `sdk-stable` client. Do not make the worker on `main` depend on a client change before `sdk-stable` has it.
+In a pool job, a pin in the family's setup (for example in `requirements.txt`) wins over `./sdk` of the runner ref when the
+versions differ, and `runner/worker.py` then runs with the pinned client. For this reason family repos keep the client out of
+`requirements.txt`.
 
 Never move or delete an `sdk-vX.Y.Z` tag.
 

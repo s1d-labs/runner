@@ -112,7 +112,7 @@ The hub passes `ref` (a branch, tag or commit of this repository) when it starts
 `runner.yml@main` and never change; tags let the hub pin a known-good version. Family repos run at `main`.
 
 The client has its own tags: `sdk-vX.Y.Z` (one version, never moved) and `sdk-stable` (moved forward after a version ran well
-for some days). Family repos install the client from `@sdk-stable`. The release steps are in [sdk/CHANGELOG.md](sdk/CHANGELOG.md).
-Pool jobs first install `./sdk` from the runner ref, then the family's setup. When the family pins `@sdk-stable` and that version
-differs from `./sdk`, pip replaces `./sdk` with the `sdk-stable` copy, and the worker (`runner/worker.py`) also uses that copy.
-So the worker at the runner ref must work with the `sdk-stable` client. When the versions are the same, pip keeps `./sdk`.
+for some days). Family workflows (check, setup) install the client from `@sdk-stable`. The release steps are in
+[sdk/CHANGELOG.md](sdk/CHANGELOG.md). Pool jobs install `./sdk` from the runner ref, then the family's setup. Keep the client out
+of a family's `requirements.txt`: if the setup installs `@sdk-stable` and that version differs from `./sdk`, pip replaces `./sdk`
+with the `sdk-stable` copy, and the worker (`runner/worker.py`) then also uses that copy.
