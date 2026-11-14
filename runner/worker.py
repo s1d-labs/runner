@@ -187,6 +187,48 @@ def run_task(work, ctx, manifest, family_dir=None, python=None):
     return ctx.run(argv, family_dir or ctx.family_dir, env, minutes)
 
 
+REFETCH_EVERY_S = 300         # runner mode: at most one fetch of the family per this many seconds for a task scrape.json lacks
+_last_refetch = [0.0]
+
+
+def refetch_family(ctx, manifest, task, log):
+    """Runner mode: the job checked the family out once, at its start. A task added to the family after that start is missing from
+    its scrape.json: fetch the family's main again (at most once per REFETCH_EVERY_S), run scrape.json's setup commands when the
+    commit changed, and return the new manifest (else the one we have). Before this, such items were skipped by every job that
+    started before the push, until those jobs ended (civic-officials audit / bundle, 2026-11-13/14)."""
+    src = Path(ctx.family_dir)
+    if not (src / ".git").exists() or time.time() - _last_refetch[0] < REFETCH_EVERY_S:
+        return manifest
+    _last_refetch[0] = time.time()
+    old = _git(["rev-parse", "HEAD"], src).stdout.strip()
+    r = _git(["fetch", "--depth", "1", "origin", "main"], src)
+    if r.returncode:
+        log(f"task {task!r} is not in scrape.json and the family could not be fetched again: {r.stderr.strip()[-200:]}")
+        return manifest
+    new = _git(["rev-parse", "FETCH_HEAD"], src).stdout.strip()
+    if new == old:
+        return manifest
+    r = _git(["reset", "--hard", "-q", "FETCH_HEAD"], src)
+    if r.returncode:
+        log(f"could not move the family checkout to {new[:12]}: {r.stderr.strip()[-200:]}")
+        return manifest
+    try:
+        m = load_manifest(src)
+    except (OSError, ValueError) as e:
+        log(f"scrape.json at {new[:12]} can't be read ({e}); going back to {old[:12]}")
+        _git(["reset", "--hard", "-q", old], src)
+        return manifest
+    log(f"task {task!r} was not in scrape.json: family moved {old[:12]} -> {new[:12]}; running its setup again")
+    env = dict(os.environ)
+    env.pop("SCRAPE_HUB_TOKEN", None)                # setup commands never need the hub
+    for cmd in m.get("setup") or []:
+        if isinstance(cmd, str):
+            r = subprocess.run(["bash", "-c", cmd], cwd=src, env=env, capture_output=True, text=True, timeout=1800)
+            if r.returncode:
+                log(f"setup step failed after the fetch ({cmd[:120]}): {(r.stderr or r.stdout).strip()[-300:]}")
+    return m
+
+
 # -- server mode: a checkout + venv per family ------------------------------------------------------------------------------
 
 FAMILY_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
@@ -408,6 +450,9 @@ def main(argv=None):
             log(f"the hub sent work for family {family!r}, but this worker runs {args.family!r}; skipping it")
             rc = 2
         else:
+            task = work.get("task") or work.get("stage") or ""
+            if task and task not in (manifest.get("tasks") or {}):
+                manifest = refetch_family(ctx, manifest, task, log)
             rc = run_task(work, ctx, manifest)
         done += 1
         if rc == 0:

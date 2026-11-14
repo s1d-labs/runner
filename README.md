@@ -24,6 +24,9 @@ each family's storage and tracks runners, IPs, requests and hosts. Runners prove
    `hub`, `max_hours`).
 3. `runner.yml` checks out this repo at `ref` and `s1d-labs/<family>` at `main` (into `family/`), installs the sdk and runs the
    family's `setup` commands from its `scrape.json`.
+   When an assignment names a task that this `scrape.json` lacks (the family added it after the job started), the worker
+   fetches the family's `main` again (at most once per 5 min), runs the `setup` commands when the commit changed, and reads
+   `scrape.json` again.
 4. Each worker asks the hub what to do:
 
    ```
