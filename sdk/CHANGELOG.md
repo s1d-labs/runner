@@ -45,7 +45,7 @@ Never move or delete an `sdk-vX.Y.Z` tag.
 | Tag | Commit | Date |
 |---|---|---|
 | `sdk-v0.10.0` | `0908465` | 2026-11-12 |
-| `sdk-stable` | `5ed6bdc` (client 0.10.0; worker fetches the family again for a missing task) | 2026-11-15 |
+| `sdk-stable` | `a53fc08` (client 0.10.0; worker counts proxy traffic through a local relay and reports it per lease; before: `5ed6bdc` 2026-11-15) | 2026-11-19 |
 
 ## 0.10.0 (2026-11-12)
 
