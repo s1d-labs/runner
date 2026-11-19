@@ -43,6 +43,11 @@ import threading
 import time
 from pathlib import Path
 
+try:
+    from . import relay
+except ImportError:          # run as a plain script
+    import relay  # type: ignore
+
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
@@ -71,6 +76,8 @@ class Ctx:
         self.dry_run = args.dry_run
         self.log = log
         self.child = None
+        self.pool = None            # set by the loops: used to report proxy traffic (relay.py)
+        self.worker_name = ""       # the name this worker gives the hub in /api/v1/pool/assign
 
     def minutes_left(self):
         return (self.deadline - time.time()) / 60
@@ -180,11 +187,57 @@ def run_task(work, ctx, manifest, family_dir=None, python=None):
     total_jobs = work.get("total_jobs", ctx.total_jobs)
     env.update({"SCRAPE_JOB_INDEX": str(int(job_index)), "SCRAPE_TOTAL_JOBS": str(int(total_jobs)), "SCRAPE_MAX_HOURS": f"{minutes / 60:.3f}",
                 "SCRAPE_HUB_URL": ctx.hub, "SCRAPE_POOL_PROJECT": str(work.get("project") or ""), "SCRAPE_POOL_TARGET": str(work.get("target") or "")})
-    env.update(proxy_env(work.get("proxy"), ctx))
+    proxy = work.get("proxy")
+    counter = None
+    if isinstance(proxy, dict) and isinstance(proxy.get("url"), str) and not ctx.dry_run:
+        try:
+            counter, local_url = relay.start_for(proxy["url"])
+            if counter:
+                proxy = {**proxy, "url": local_url}
+        except Exception as e:  # noqa: BLE001 - counting must never stop the work: the task gets the proxy itself
+            ctx.log(f"proxy traffic counter not started ({type(e).__name__}: {e}); the task uses the proxy directly, uncounted")
+            counter = None
+    env.update(proxy_env(proxy, ctx))
     ctx.log(f"{task} for {work.get('project') or '?'} on {work.get('target') or '?'}, slice {job_index} of {total_jobs}"
-            + (f", through proxy {work['proxy'].get('label')} ({work['proxy'].get('exit')})" if isinstance(work.get("proxy"), dict) else ""))
+            + (f", through proxy {proxy.get('label')} ({proxy.get('exit')})" + (" (traffic counted)" if counter else "") if isinstance(proxy, dict) else ""))
     argv = [(python or sys.executable) if cmd[0] == "python" else cmd[0], *cmd[1:], *extra]
-    return ctx.run(argv, family_dir or ctx.family_dir, env, minutes)
+    if not counter:
+        return ctx.run(argv, family_dir or ctx.family_dir, env, minutes)
+    stop = threading.Event()
+    label = str(proxy.get("label") or "")
+    reporter = threading.Thread(target=_report_loop, args=(ctx, counter, label, stop), daemon=True)
+    reporter.start()
+    try:
+        return ctx.run(argv, family_dir or ctx.family_dir, env, minutes)
+    finally:
+        stop.set()
+        reporter.join(timeout=5)
+        counter.stop()
+        _report(ctx, counter, label)
+        up, down, conns = counter.totals()
+        ctx.log(f"proxy {label} traffic: {relay.human(down)} in, {relay.human(up)} out, {conns} connections")
+
+
+_usage_warned = [False]
+
+
+def _report(ctx, counter, label):
+    """Send the traffic since the last report to the hub (POST /api/v1/proxy/usage). Never raises."""
+    up, down, conns = counter.take()
+    if not (up or down or conns) or ctx.pool is None or not hasattr(ctx.pool, "call"):
+        return
+    try:
+        ctx.pool.call("POST", "/api/v1/proxy/usage", {"label": label, "worker": ctx.worker_name, "bytes_up": up, "bytes_down": down,
+                                                      "conns": conns}, retries=2)
+    except Exception as e:  # noqa: BLE001 - an older hub (404) or a network blip: the work goes on; say so once
+        if not _usage_warned[0]:
+            _usage_warned[0] = True
+            ctx.log(f"proxy traffic not reported to the hub ({type(e).__name__}: {str(e)[:120]}); the work goes on")
+
+
+def _report_loop(ctx, counter, label, stop):
+    while not stop.wait(relay.REPORT_EVERY_S):
+        _report(ctx, counter, label)
 
 
 REFETCH_EVERY_S = 300         # runner mode: at most one fetch of the family per this many seconds for a task scrape.json lacks
@@ -419,6 +472,7 @@ def main(argv=None):
 
     fake_env = dict(e.split("=", 1) for e in args.fake_env if "=" in e)
     pool = FakePool(args.family, args.fake_task or next(iter(manifest["tasks"]), "run"), fake_env) if args.hub_fake else PoolClient(ctx.hub)
+    ctx.pool, ctx.worker_name = (None if args.hub_fake else pool), worker
     log(f"family {args.family}, hub {'(fake)' if args.hub_fake else ctx.hub}, worker {worker}, until {args.max_hours} h")
     errors = failures = done = 0
     while not STOP.is_set():
@@ -486,6 +540,7 @@ def server_loop(args, ctx, log):
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
     pool = PoolClient(ctx.hub)
+    ctx.pool, ctx.worker_name = pool, worker
     log(f"server mode, hub {ctx.hub}, worker {worker}, run {os.environ['SCRAPE_RUN_ID']}, until {args.max_hours} h")
     errors = failures = done = 0
     while not STOP.is_set():
