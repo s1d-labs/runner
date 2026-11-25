@@ -241,25 +241,46 @@ def _report_loop(ctx, counter, label, stop):
 
 
 REFETCH_EVERY_S = 300         # runner mode: at most one fetch of the family per this many seconds for a task scrape.json lacks
+REFETCH_FORCE_MIN_S = 30      # ... and at most one per this many seconds when a task asks for newer family code (exit 75)
 _last_refetch = [0.0]
+# A family task exits with this code when it gave its work back because the family checkout is too old for it (eci-rolls ocr-any,
+# 2026-11-25: a model set the hub names is not in this commit, or the checkout moved under the task). 75 = EX_TEMPFAIL. The worker
+# fetches the family's main again at once (not after REFETCH_EVERY_S) and, when the commit moved, asks for the next assignment
+# without the failure wait. Older workers treat 75 like any other failure (wait 30-300 s, ask again).
+EXIT_NEEDS_NEWER_FAMILY = 75
 
 
-def refetch_family(ctx, manifest, task, log):
+def _head(src):
+    return _git(["rev-parse", "HEAD"], src).stdout.strip() if (Path(src) / ".git").exists() else ""
+
+
+def refetch_family(ctx, manifest, task, log, force=False):
     """Runner mode: the job checked the family out once, at its start. A task added to the family after that start is missing from
-    its scrape.json: fetch the family's main again (at most once per REFETCH_EVERY_S), run scrape.json's setup commands when the
-    commit changed, and return the new manifest (else the one we have). Before this, such items were skipped by every job that
-    started before the push, until those jobs ended (civic-officials audit / bundle, 2026-11-13/14)."""
+    its scrape.json: fetch the family's main again (at most once per REFETCH_EVERY_S; with force, as for exit 75, once per
+    REFETCH_FORCE_MIN_S), run scrape.json's setup commands when the commit changed, and return the new manifest (else the one we
+    have). Before this, such items were skipped by every job that started before the push, until those jobs ended
+    (civic-officials audit / bundle, 2026-11-13/14).
+    The job's worker processes (procs) share one checkout: when another worker already moved it to main, HEAD equals FETCH_HEAD
+    but this worker still holds the manifest of the old commit; it then reloads scrape.json from disk (2026-11-25: such workers
+    skipped the new task with exit 2 until their job ended)."""
     src = Path(ctx.family_dir)
-    if not (src / ".git").exists() or time.time() - _last_refetch[0] < REFETCH_EVERY_S:
+    if not (src / ".git").exists() or time.time() - _last_refetch[0] < (REFETCH_FORCE_MIN_S if force else REFETCH_EVERY_S):
         return manifest
     _last_refetch[0] = time.time()
     old = _git(["rev-parse", "HEAD"], src).stdout.strip()
     r = _git(["fetch", "--depth", "1", "origin", "main"], src)
     if r.returncode:
-        log(f"task {task!r} is not in scrape.json and the family could not be fetched again: {r.stderr.strip()[-200:]}")
+        log(f"task {task!r} needs newer family code and the family could not be fetched again: {r.stderr.strip()[-200:]}")
         return manifest
     new = _git(["rev-parse", "FETCH_HEAD"], src).stdout.strip()
     if new == old:
+        try:
+            disk = load_manifest(src)
+        except (OSError, ValueError):
+            return manifest
+        if disk != manifest:
+            log(f"family checkout is already at {new[:12]} (moved by another worker of this job); using its scrape.json")
+            return disk
         return manifest
     r = _git(["reset", "--hard", "-q", "FETCH_HEAD"], src)
     if r.returncode:
@@ -507,7 +528,16 @@ def main(argv=None):
             task = work.get("task") or work.get("stage") or ""
             if task and task not in (manifest.get("tasks") or {}):
                 manifest = refetch_family(ctx, manifest, task, log)
+            head0 = _head(ctx.family_dir)
             rc = run_task(work, ctx, manifest)
+            if rc == EXIT_NEEDS_NEWER_FAMILY and head0 and not args.hub_fake:
+                manifest = refetch_family(ctx, manifest, task, log, force=True)
+                head1 = _head(ctx.family_dir)
+                if head1 != head0:
+                    log(f"{task} asked for newer family code (exit {rc}): family {head0[:12]} -> {head1[:12]}; next assignment now")
+                    done += 1
+                    failures = 0
+                    continue
         done += 1
         if rc == 0:
             failures = 0

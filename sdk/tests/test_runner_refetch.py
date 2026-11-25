@@ -63,3 +63,32 @@ def test_no_git_checkout_is_left_alone(tmp_path, monkeypatch):
     m = worker.load_manifest(tmp_path)
     monkeypatch.setattr(worker, "_last_refetch", [0.0])
     assert worker.refetch_family(SimpleNamespace(family_dir=tmp_path), m, "b", lambda x: None) is m
+
+
+def test_sibling_moved_the_checkout_reloads_manifest(tmp_path, monkeypatch):
+    """Two worker processes of one job share the checkout: worker 1's refetch moved HEAD to main; worker 2 still holds the old
+    manifest and must read scrape.json from disk (2026-11-25: it skipped the new task with exit 2 until its job ended)."""
+    origin, job = setup_family(tmp_path)
+    ctx = SimpleNamespace(family_dir=job)
+    old = worker.load_manifest(job)                 # worker 2's manifest
+    (origin / "scrape.json").write_text('{"family": "fam", "setup": [], "tasks": {"a": ["python", "a.py"], "b": ["python", "b.py"]}}')
+    git("commit", "-q", "-am", "two", cwd=origin)
+    monkeypatch.setattr(worker, "_last_refetch", [0.0])
+    assert "b" in worker.refetch_family(ctx, old, "b", lambda x: None)["tasks"]     # worker 1 moves the checkout
+    monkeypatch.setattr(worker, "_last_refetch", [0.0])                              # worker 2 (its own process)
+    logs = []
+    m2 = worker.refetch_family(ctx, old, "b", logs.append)
+    assert "b" in m2["tasks"] and any("another worker" in x for x in logs)
+
+
+def test_force_refetch_has_a_shorter_throttle(tmp_path, monkeypatch):
+    origin, job = setup_family(tmp_path)
+    ctx = SimpleNamespace(family_dir=job)
+    m = worker.load_manifest(job)
+    (origin / "scrape.json").write_text('{"family": "fam", "setup": [], "tasks": {"a": ["python", "a2.py"]}}')
+    git("commit", "-q", "-am", "two", cwd=origin)
+    import time
+    monkeypatch.setattr(worker, "_last_refetch", [time.time() - worker.REFETCH_FORCE_MIN_S - 1])
+    assert worker.refetch_family(ctx, m, "a", lambda x: None) is m                   # normal throttle: no fetch yet
+    m2 = worker.refetch_family(ctx, m, "a", lambda x: None, force=True)             # exit 75: fetched
+    assert m2["tasks"]["a"] == ["python", "a2.py"] and worker._head(job) != ""
